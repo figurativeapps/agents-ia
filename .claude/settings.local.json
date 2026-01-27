@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python run_pipeline.py:*)",
+      "Bash(python execution/3_get_reviews.py:*)",
+      "Bash(python execution/sync_hubspot.py:*)",
+      "Bash(del \"c:\\\\Users\\\\jorda\\\\Agents AI\\\\execution\\\\3_get_reviews.py\")",
+      "Bash(python:*)"
+    ]
+  }
+}

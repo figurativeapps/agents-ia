@@ -1,0 +1,33 @@
+# Core dependencies for Lead Generation Agent
+
+# Data manipulation and Excel
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+# API integrations
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# HubSpot CRM integration
+hubspot-api-client>=8.0.0
+
+# Web scraping and qualification
+firecrawl-py>=0.0.8
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# Apollo.io integration (via requests)
+# Apollo uses REST API, no dedicated client needed
+
+# Apify integration (for reviews)
+apify-client>=1.5.0
+
+# PDF Generation
+jinja2>=3.1.0
+weasyprint>=60.0
+pdfkit>=1.0.0
+
+# Utility libraries
+tenacity>=8.2.0  # For retry logic
+tqdm>=4.65.0     # Progress bars
+python-slugify>=8.0.0  # Text slugification

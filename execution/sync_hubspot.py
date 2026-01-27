@@ -1,0 +1,377 @@
+"""
+STEP 6: Sync to HubSpot CRM
+Syncs leads to HubSpot with deduplication logic (Upsert).
+
+Usage:
+    python sync_hubspot.py --input .tmp/enriched_leads.json
+"""
+
+import os
+import sys
+import json
+import argparse
+from pathlib import Path
+from dotenv import load_dotenv
+from hubspot import HubSpot
+from hubspot.crm.contacts import SimplePublicObjectInputForCreate, ApiException
+from hubspot.crm.companies import SimplePublicObjectInputForCreate as CompanyInput
+from time import sleep
+
+# Fix Windows console encoding issues
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        # Python < 3.7
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
+
+# Load environment variables
+load_dotenv()
+
+HUBSPOT_API_KEY = os.getenv('HUBSPOT_API_KEY')
+
+
+def init_hubspot_client():
+    """Initialize HubSpot API client"""
+    if not HUBSPOT_API_KEY:
+        raise ValueError("❌ HUBSPOT_API_KEY not found in .env file")
+
+    return HubSpot(access_token=HUBSPOT_API_KEY)
+
+
+def search_contact_by_email(client, email):
+    """
+    Search for existing contact by email
+
+    Returns:
+        Contact ID if found, None otherwise
+    """
+    try:
+        # Use the search API
+        filter_groups = [{
+            "filters": [{
+                "propertyName": "email",
+                "operator": "EQ",
+                "value": email
+            }]
+        }]
+
+        search_request = {
+            "filterGroups": filter_groups,
+            "properties": ["email", "firstname", "lastname", "phone", "company"]
+        }
+
+        results = client.crm.contacts.search_api.do_search(public_object_search_request=search_request)
+
+        if results.total > 0:
+            return results.results[0].id
+
+        return None
+
+    except Exception as e:
+        print(f"    ⚠️  Search error: {str(e)[:50]}")
+        return None
+
+
+def create_or_update_company(client, lead):
+    """
+    Create or update company in HubSpot
+
+    Returns:
+        Company ID
+    """
+    company_name = lead.get('Nom_Entreprise', '')
+    domain = lead.get('Site_Web', '').replace('https://', '').replace('http://', '').split('/')[0]
+
+    if not company_name:
+        return None
+
+    try:
+        # Search for existing company by domain or name
+        if domain:
+            filter_groups = [{
+                "filters": [{
+                    "propertyName": "domain",
+                    "operator": "EQ",
+                    "value": domain
+                }]
+            }]
+        else:
+            filter_groups = [{
+                "filters": [{
+                    "propertyName": "name",
+                    "operator": "EQ",
+                    "value": company_name
+                }]
+            }]
+
+        search_request = {
+            "filterGroups": filter_groups,
+            "properties": ["name", "domain"]
+        }
+
+        results = client.crm.companies.search_api.do_search(public_object_search_request=search_request)
+
+        if results.total > 0:
+            # Company exists - update it
+            company_id = results.results[0].id
+            print(f"    🏢 Company exists: {company_name}")
+            return company_id
+
+        # Create new company
+        company_properties = {
+            "name": company_name,
+            "domain": domain,
+            "city": lead.get('Ville', ''),
+            "address": lead.get('Adresse', ''),
+            "zip": lead.get('Code_Postal', ''),
+            "country": lead.get('Pays', ''),
+            "phone": lead.get('Tel_Standard', ''),
+            "description": f"Industrie: {lead.get('Industrie', '')}" if lead.get('Industrie') else '',
+        }
+
+        # Remove empty values
+        company_properties = {k: v for k, v in company_properties.items() if v and str(v).strip()}
+
+        company_input = CompanyInput(properties=company_properties)
+        company = client.crm.companies.basic_api.create(simple_public_object_input_for_create=company_input)
+
+        print(f"    🏢 Created company: {company_name}")
+        return company.id
+
+    except Exception as e:
+        error_msg = str(e)
+        print(f"    ⚠️  Company error: {error_msg[:200]}")
+        if hasattr(e, 'body'):
+            print(f"    📋 Error details: {e.body}")
+        return None
+
+
+def create_contact(client, lead, company_id=None):
+    """Create new contact in HubSpot"""
+
+    # Use decision maker email if available, otherwise generic email
+    email = lead.get('Email_Decideur') or lead.get('Email_Generique')
+
+    if not email:
+        print(f"    ⚠️  No email available - skipping")
+        return None
+
+    # Prepare contact properties - using standard HubSpot properties
+    properties = {
+        "email": email,
+        "phone": lead.get('Tel_Standard', ''),
+        "company": lead.get('Nom_Entreprise', ''),
+        "website": lead.get('Site_Web', ''),
+        "address": lead.get('Adresse', ''),
+        "city": lead.get('Ville', ''),
+        "zip": lead.get('Code_Postal', ''),
+        "country": lead.get('Pays', ''),
+        "industrie": lead.get('Industrie', ''),  # Custom field in HubSpot
+        "hs_linkedin_url": lead.get('LinkedIn_URL', ''),  # HubSpot standard field
+    }
+
+    # Add name fields if available
+    if lead.get('Nom_Decideur'):
+        name_parts = lead.get('Nom_Decideur', '').split()
+        if name_parts:
+            properties["firstname"] = name_parts[0]
+            if len(name_parts) > 1:
+                properties["lastname"] = ' '.join(name_parts[1:])
+
+    # Add job title if available
+    if lead.get('Poste_Decideur'):
+        properties["jobtitle"] = lead.get('Poste_Decideur')
+
+    # Remove empty values
+    properties = {k: v for k, v in properties.items() if v and v.strip()}
+
+    try:
+        contact_input = SimplePublicObjectInputForCreate(properties=properties)
+        contact = client.crm.contacts.basic_api.create(simple_public_object_input_for_create=contact_input)
+
+        # Associate with company if company_id exists
+        if company_id:
+            try:
+                client.crm.contacts.associations_api.create(
+                    contact_id=contact.id,
+                    to_object_type="companies",
+                    to_object_id=company_id,
+                    association_type="contact_to_company"
+                )
+            except:
+                pass  # Association might already exist
+
+        print(f"    ✅ Created contact: {email}")
+        return contact.id
+
+    except ApiException as e:
+        error_msg = str(e)
+        print(f"    ❌ Error creating contact: {error_msg[:200]}")
+        if hasattr(e, 'body'):
+            print(f"    📋 Error details: {e.body}")
+        return None
+    except Exception as e:
+        print(f"    ❌ Unexpected error: {str(e)[:200]}")
+        return None
+
+
+def update_contact(client, contact_id, lead):
+    """Update existing contact with new information"""
+
+    # Prepare update properties (only non-empty values)
+    properties = {}
+
+    if lead.get('Tel_Standard'):
+        properties['phone'] = lead.get('Tel_Standard')
+
+    if lead.get('Industrie'):
+        properties['industrie'] = lead.get('Industrie')  # Custom field created in HubSpot
+
+    if lead.get('LinkedIn_URL'):
+        properties['hs_linkedin_url'] = lead.get('LinkedIn_URL')  # HubSpot standard field
+
+    if lead.get('Poste_Decideur'):
+        properties['jobtitle'] = lead.get('Poste_Decideur')
+
+    if lead.get('Adresse'):
+        properties['address'] = lead.get('Adresse')
+
+    if lead.get('Ville'):
+        properties['city'] = lead.get('Ville')
+
+    if lead.get('Code_Postal'):
+        properties['zip'] = lead.get('Code_Postal')
+
+    if lead.get('Pays'):
+        properties['country'] = lead.get('Pays')
+
+    if not properties:
+        print(f"    ⏭️  No new data to update")
+        return contact_id
+
+    try:
+        client.crm.contacts.basic_api.update(
+            contact_id=contact_id,
+            simple_public_object_input={"properties": properties}
+        )
+        print(f"    ♻️  Updated contact")
+        return contact_id
+
+    except ApiException as e:
+        print(f"    ⚠️  Update error: {str(e)[:80]}")
+        return contact_id
+
+
+def sync_lead_to_hubspot(client, lead):
+    """
+    Sync a single lead to HubSpot with upsert logic
+    Respects the Statut_Sync field to avoid re-syncing deleted contacts
+
+    Returns:
+        Tuple: (HubSpot contact ID, new_status)
+    """
+
+    company_name = lead.get('Nom_Entreprise', 'Unknown')
+    email = lead.get('Email_Decideur') or lead.get('Email_Generique')
+    sync_status = lead.get('Statut_Sync', 'New')
+
+    print(f"  🔄 Syncing: {company_name}")
+
+    # Check if this contact was previously deleted from HubSpot
+    if sync_status == 'Deleted':
+        print(f"    🚫 Skipped - Contact marked as Deleted (was removed from HubSpot)")
+        return None, 'Deleted'
+
+    # Step 1: Create or get company
+    company_id = create_or_update_company(client, lead)
+
+    # Step 2: Check if contact exists
+    if email:
+        existing_contact_id = search_contact_by_email(client, email)
+
+        if existing_contact_id:
+            # Update existing contact
+            contact_id = update_contact(client, existing_contact_id, lead)
+            new_status = 'Synced'
+        else:
+            # Create new contact
+            contact_id = create_contact(client, lead, company_id)
+            new_status = 'Synced' if contact_id else 'Failed'
+    else:
+        print(f"    ⚠️  No email - skipping contact creation")
+        contact_id = None
+        new_status = 'No Email'
+
+    return contact_id, new_status
+
+
+def sync_leads(input_file):
+    """Sync all leads to HubSpot"""
+
+    # Initialize HubSpot client
+    client = init_hubspot_client()
+
+    # Load leads
+    with open(input_file, 'r', encoding='utf-8') as f:
+        leads = json.load(f)
+
+    print(f"📋 Syncing {len(leads)} leads to HubSpot...\n")
+
+    synced_count = 0
+    skipped_count = 0
+
+    for i, lead in enumerate(leads, 1):
+        print(f"[{i}/{len(leads)}]")
+
+        contact_id, new_status = sync_lead_to_hubspot(client, lead)
+
+        # Update the lead's status
+        lead['Statut_Sync'] = new_status
+
+        if contact_id:
+            # Store HubSpot ID back in lead data
+            lead['HubSpot_ID'] = str(contact_id)
+            synced_count += 1
+        elif new_status == 'Deleted':
+            skipped_count += 1
+
+        # Rate limiting
+        sleep(0.5)
+
+    print(f"\n✅ Sync complete!")
+    print(f"  📊 Total: {synced_count}/{len(leads)} contacts synced")
+    if skipped_count > 0:
+        print(f"  🚫 Skipped: {skipped_count} contacts (marked as Deleted)")
+
+    # Save updated leads with HubSpot IDs
+    with open(input_file, 'w', encoding='utf-8') as f:
+        json.dump(leads, f, ensure_ascii=False, indent=2)
+
+    return leads
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Sync leads to HubSpot CRM')
+    parser.add_argument('--input', required=True, help='Input JSON file with enriched leads')
+
+    args = parser.parse_args()
+
+    input_path = Path(args.input)
+
+    if not input_path.exists():
+        print(f"❌ Input file not found: {input_path}")
+        return
+
+    # Sync to HubSpot
+    sync_leads(input_path)
+
+    print(f"\n✅ Step 6 complete - All leads synced to HubSpot!")
+    print(f"\n💡 Tip: Check your HubSpot CRM to verify the data")
+
+
+if __name__ == '__main__':
+    main()
