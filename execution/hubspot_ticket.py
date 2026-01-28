@@ -160,7 +160,7 @@ def create_ticket(
         for url in fichiers_urls:
             content += f"- {url}\n"
     
-    # Ticket properties
+    # Ticket properties (using only standard HubSpot properties)
     properties = {
         "subject": objet,
         "content": content,
@@ -169,17 +169,18 @@ def create_ticket(
         "hs_ticket_priority": "HIGH" if reclassifie else "MEDIUM",
     }
     
-    # Add custom properties if they exist in HubSpot
-    # These may need to be created manually in HubSpot first
-    try:
-        if type_final:
-            properties["type_demande"] = type_final
-        if source_formulaire:
-            properties["source_formulaire"] = source_formulaire
-        if reclassifie:
-            properties["reclassifie"] = "true"
-    except Exception:
-        pass  # Custom properties may not exist
+    # Add metadata to content instead of custom properties
+    # (Custom properties would need to be created in HubSpot first)
+    metadata = []
+    if type_final:
+        metadata.append(f"Type: {type_final}")
+    if source_formulaire:
+        metadata.append(f"Source: {source_formulaire}")
+    if reclassifie:
+        metadata.append("RECLASSIFIE PAR IA")
+    
+    if metadata:
+        properties["content"] = f"[{' | '.join(metadata)}]\n\n{content}"
     
     try:
         ticket_input = TicketInput(properties=properties)
