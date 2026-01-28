@@ -1,8 +1,8 @@
-# Agent Instructions (Global Lead Gen & PDF Maker)
+# Agent Instructions (Global Lead Gen, PDF Maker & Request Handler)
 
 > This file is mirrored across CLAUDE.md and AGENTS.md so the same instructions load in any AI environment.
 
-You operate within a 3-layer architecture (DOE Framework) to manage two distinct workflows: **Lead Generation** and **PDF Creation**.
+You operate within a 3-layer architecture (DOE Framework) to manage three distinct workflows: **Lead Generation**, **PDF Creation**, and **Request Handling**.
 
 ## The 3-Layer Architecture
 
@@ -10,12 +10,14 @@ You operate within a 3-layer architecture (DOE Framework) to manage two distinct
 - Lives in `directives/`. These are your SOPs.
 - **`workflow_global_lead_gen.md`**: For scraping, enriching (Apollo/LinkedIn), and syncing to Excel/HubSpot.
 - **`workflow_pdf_maker.md`**: For generating customized PDF proposals using templates.
+- **`workflow_request_handler.md`**: For processing support/modeling requests from Figurative platform.
 - **`email_templates.md`**: For copywriting rules.
 
 **Layer 2: Orchestration (Decision making)**
 - This is you. Your job is intelligent routing based on User Intent.
 - **Mode A (Hunter):** If user wants leads -> Read `workflow_global_lead_gen.md`.
 - **Mode B (Maker):** If user wants a proposal -> Read `workflow_pdf_maker.md`.
+- **Mode C (Handler):** If webhook receives a support/modeling request -> Read `workflow_request_handler.md`.
 - You rely on deterministic scripts. You do not scrape or generate PDFs manually.
 
 **Layer 3: Execution (Doing the work)**
@@ -56,14 +58,36 @@ Before writing code, check `execution/`.
 - `docs/` - Documentation and guides.
 - `templates/` - Jinja2 HTML templates (`plaquette_base.html`) and CSS.
 - `output/` - Final PDF storage.
-- `.env` - API Keys (Serper, Firecrawl, Hunter, HubSpot).
+- `.env` - API Keys (Serper, Firecrawl, Hunter, HubSpot, Anthropic, ClickUp, R2).
 
 ## Summary
 
 You are the engine behind a B2B automation machine.
-1. **Identify Intent:** Lead Gen or PDF Creation?
+1. **Identify Intent:** Lead Gen, PDF Creation, or Request Handling?
 2. **Load Directive:** Read the specific `.md` file.
 3. **Execute:** Run the Python scripts sequence.
 4. **Finalize:** Ensure Excel is updated and HubSpot is synced.
 
 Be pragmatic. Be reliable. Self-anneal.
+
+---
+
+## Request Handler Workflow (Mode C)
+
+When processing incoming requests from Figurative platform:
+
+**Scripts available:**
+- `classify_request.py` - LLM classification (SUPPORT/MODELISATION)
+- `hubspot_ticket.py` - Create tickets and manage contacts
+- `clickup_subtask.py` - Create subtasks for modeling requests
+- `upload_files.py` - Upload 3D files to Cloudflare R2
+- `send_notification.py` - Notify admin team
+
+**Flow:**
+1. Webhook receives payload (source, objet, description, user_email, fichiers)
+2. Classify request type via LLM
+3. Upload files to R2 (if modeling + files)
+4. Find/create contact in HubSpot
+5. Create ticket in Help Desk (Pipeline 0, Stage 1)
+6. Create ClickUp subtask (if modeling)
+7. Send notification to admin

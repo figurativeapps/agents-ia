@@ -31,3 +31,10 @@ pdfkit>=1.0.0
 tenacity>=8.2.0  # For retry logic
 tqdm>=4.65.0     # Progress bars
 python-slugify>=8.0.0  # Text slugification
+
+# Request Handler Workflow
+anthropic>=0.18.0  # LLM classification
+boto3>=1.34.0      # Cloudflare R2 (S3-compatible)
+fastapi>=0.109.0   # Webhook server
+uvicorn>=0.27.0    # ASGI server
+redis>=5.0.0       # Queue management
