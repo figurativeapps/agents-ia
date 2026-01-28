@@ -33,9 +33,7 @@ load_dotenv()
 HUBSPOT_API_KEY = os.getenv("HUBSPOT_API_KEY")
 HUBSPOT_PIPELINE_ID = os.getenv("HUBSPOT_PIPELINE_ID", "0")
 HUBSPOT_STAGE_NEW = os.getenv("HUBSPOT_STAGE_NEW", "1")
-
-# HubSpot Hub ID (for URL generation) - will be fetched dynamically
-HUB_ID = None
+HUBSPOT_HUB_ID = os.getenv("HUBSPOT_HUB_ID", "147476643")  # Your HubSpot portal ID
 
 
 def get_hubspot_client():
@@ -43,22 +41,6 @@ def get_hubspot_client():
     if not HUBSPOT_API_KEY:
         raise ValueError("HUBSPOT_API_KEY not found in .env")
     return HubSpot(access_token=HUBSPOT_API_KEY)
-
-
-def get_hub_id(client):
-    """Get HubSpot Hub ID for URL generation"""
-    global HUB_ID
-    if HUB_ID is None:
-        try:
-            # Get account info
-            account_info = client.account.api_client.call_api(
-                '/account-info/v3/details', 'GET'
-            )
-            HUB_ID = account_info[0].get('portalId')
-        except Exception:
-            # Fallback: extract from API response if available
-            HUB_ID = os.getenv("HUBSPOT_HUB_ID", "UNKNOWN")
-    return HUB_ID
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
@@ -151,7 +133,7 @@ def create_ticket(
 ) -> dict:
     """Create a ticket in HubSpot Help Desk"""
     client = get_hubspot_client()
-    hub_id = get_hub_id(client)
+    hub_id = HUBSPOT_HUB_ID
     
     # Build ticket content
     content = description
@@ -193,14 +175,24 @@ def create_ticket(
         
         print(f"✅ Created ticket: {ticket_id}")
         
-        # Associate ticket with contact
+        # Associate ticket with contact using v4 associations API
         if contact_id:
             try:
-                client.crm.tickets.associations_api.create(
-                    ticket_id=ticket_id,
+                from hubspot.crm.associations.v4 import BatchInputPublicDefaultAssociationMultiPost
+                from hubspot.crm.associations.v4.models import PublicDefaultAssociationMultiPost
+                
+                association_input = BatchInputPublicDefaultAssociationMultiPost(
+                    inputs=[
+                        PublicDefaultAssociationMultiPost(
+                            _from={"id": ticket_id},
+                            to={"id": contact_id}
+                        )
+                    ]
+                )
+                client.crm.associations.v4.batch_api.create_default(
+                    from_object_type="tickets",
                     to_object_type="contacts",
-                    to_object_id=contact_id,
-                    association_type="ticket_to_contact"
+                    batch_input_public_default_association_multi_post=association_input
                 )
                 print(f"🔗 Associated ticket with contact {contact_id}")
             except Exception as e:
