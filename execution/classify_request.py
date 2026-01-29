@@ -67,20 +67,30 @@ def has_3d_files(fichiers: list) -> bool:
     )
 
 
+def normalize_text(text: str) -> str:
+    """Normalise le texte: minuscules et suppression des accents"""
+    text = text.lower()
+    # Mapping des caractères accentués
+    accents = {
+        'é': 'e', 'è': 'e', 'ê': 'e', 'ë': 'e',
+        'à': 'a', 'â': 'a', 'ä': 'a',
+        'ù': 'u', 'û': 'u', 'ü': 'u',
+        'ô': 'o', 'ö': 'o',
+        'î': 'i', 'ï': 'i',
+        'ç': 'c'
+    }
+    for accented, normal in accents.items():
+        text = text.replace(accented, normal)
+    return text
+
+
 def count_keywords(text: str, keywords: list) -> int:
     """Compte le nombre de mots-clés trouvés dans le texte"""
-    # Normaliser le texte (accents, casse)
-    text_lower = text.lower()
-    # Remplacer les accents courants pour matching
-    text_normalized = text_lower.replace('é', 'e').replace('è', 'e').replace('ê', 'e')
-    text_normalized = text_normalized.replace('à', 'a').replace('â', 'a')
-    text_normalized = text_normalized.replace('ô', 'o').replace('î', 'i').replace('û', 'u')
-    
+    text_norm = normalize_text(text)
     count = 0
     for kw in keywords:
-        kw_normalized = kw.replace('é', 'e').replace('è', 'e').replace('ê', 'e')
-        kw_normalized = kw_normalized.replace('à', 'a').replace('â', 'a')
-        if kw_normalized in text_normalized or kw in text_lower:
+        kw_norm = normalize_text(kw)
+        if kw_norm in text_norm:
             count += 1
     return count
 
@@ -90,7 +100,7 @@ def rule_based_classify(objet: str, description: str, fichiers: list, source: st
     Classification par règles (sans LLM).
     Retourne None si le cas est ambigu et nécessite le LLM.
     """
-    text = f"{objet} {description}".lower()
+    text = f"{objet} {description}"
     
     # Règle 1: Fichiers 3D présents → MODELISATION (très forte confiance)
     if has_3d_files(fichiers):
@@ -104,6 +114,9 @@ def rule_based_classify(objet: str, description: str, fichiers: list, source: st
     # Compter les mots-clés
     support_count = count_keywords(text, SUPPORT_KEYWORDS)
     modelisation_count = count_keywords(text, MODELISATION_KEYWORDS)
+    
+    # Debug (peut être supprimé en production)
+    # print(f"  [DEBUG] support={support_count}, modelisation={modelisation_count}")
     
     # Règle 2: Mots-clés SUPPORT dominants (sans mots-clés modélisation)
     if support_count >= 2 and modelisation_count == 0:
@@ -162,7 +175,7 @@ Réponds en JSON: {{"type": "SUPPORT" ou "MODELISATION", "confiance": 0-100, "ra
 
     try:
         response = client.messages.create(
-            model="claude-3-5-haiku-latest",  # 10x moins cher que Sonnet
+            model="claude-haiku-4-5",  # Modèle rapide et économique
             max_tokens=100,  # Réponse courte suffisante
             messages=[{"role": "user", "content": prompt}]
         )
