@@ -69,8 +69,20 @@ def has_3d_files(fichiers: list) -> bool:
 
 def count_keywords(text: str, keywords: list) -> int:
     """Compte le nombre de mots-clés trouvés dans le texte"""
+    # Normaliser le texte (accents, casse)
     text_lower = text.lower()
-    return sum(1 for kw in keywords if kw in text_lower)
+    # Remplacer les accents courants pour matching
+    text_normalized = text_lower.replace('é', 'e').replace('è', 'e').replace('ê', 'e')
+    text_normalized = text_normalized.replace('à', 'a').replace('â', 'a')
+    text_normalized = text_normalized.replace('ô', 'o').replace('î', 'i').replace('û', 'u')
+    
+    count = 0
+    for kw in keywords:
+        kw_normalized = kw.replace('é', 'e').replace('è', 'e').replace('ê', 'e')
+        kw_normalized = kw_normalized.replace('à', 'a').replace('â', 'a')
+        if kw_normalized in text_normalized or kw in text_lower:
+            count += 1
+    return count
 
 
 def rule_based_classify(objet: str, description: str, fichiers: list, source: str) -> dict | None:
@@ -150,7 +162,7 @@ Réponds en JSON: {{"type": "SUPPORT" ou "MODELISATION", "confiance": 0-100, "ra
 
     try:
         response = client.messages.create(
-            model="claude-3-5-haiku-20241022",  # 10x moins cher que Sonnet
+            model="claude-3-5-haiku-latest",  # 10x moins cher que Sonnet
             max_tokens=100,  # Réponse courte suffisante
             messages=[{"role": "user", "content": prompt}]
         )
