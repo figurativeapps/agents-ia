@@ -33,6 +33,7 @@ R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
 R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME")
 R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL")
+R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL")  # e.g., https://pub-xxx.r2.dev
 
 # 3D file extensions to prioritize
 FILE_3D_EXTENSIONS = {'.glb', '.usdz', '.obj', '.fbx', '.stl', '.gltf', '.dae'}
@@ -109,10 +110,12 @@ def upload_to_r2(local_path: Path, remote_key: str) -> str | None:
             }
         )
         
-        # Build public URL
-        # R2 public URL format: https://{bucket}.{account}.r2.dev/{key}
-        # Or custom domain if configured
-        public_url = f"{R2_ENDPOINT_URL.replace('r2.cloudflarestorage.com', 'r2.dev')}/{R2_BUCKET_NAME}/{remote_key}"
+        # Build public URL using the public R2.dev URL
+        if R2_PUBLIC_URL:
+            public_url = f"{R2_PUBLIC_URL.rstrip('/')}/{remote_key}"
+        else:
+            # Fallback to constructed URL (may not work without public access)
+            public_url = f"{R2_ENDPOINT_URL.replace('r2.cloudflarestorage.com', 'r2.dev')}/{R2_BUCKET_NAME}/{remote_key}"
         
         return public_url
         
