@@ -40,6 +40,19 @@ def get_headers():
     }
 
 
+def get_task_list_id(task_id: str) -> str | None:
+    """Get the list ID for a given task"""
+    url = f"{CLICKUP_API_BASE}/task/{task_id}"
+    try:
+        response = requests.get(url, headers=get_headers(), timeout=30)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("list", {}).get("id")
+    except Exception:
+        pass
+    return None
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def create_subtask(
     objet: str,
@@ -65,6 +78,16 @@ def create_subtask(
     """
     parent_id = parent_task_id or CLICKUP_PARENT_TASK_ID
     
+    # First, get the list ID from the parent task
+    list_id = get_task_list_id(parent_id)
+    if not list_id:
+        print(f"❌ Could not find list for parent task {parent_id}")
+        return {
+            "subtask_id": None,
+            "error": f"Could not find list for parent task {parent_id}",
+            "success": False
+        }
+    
     # Build subtask name and description
     name = f"Demande {user_email}"
     
@@ -77,15 +100,17 @@ def create_subtask(
 ---
 Créé automatiquement par l'agent DOE."""
 
-    # API payload
+    # API payload - create task with parent to make it a subtask
     payload = {
         "name": name,
         "description": description,
+        "parent": parent_id,  # This makes it a subtask
         "status": "to do",
         "priority": 3  # Normal priority
     }
     
-    url = f"{CLICKUP_API_BASE}/task/{parent_id}/subtask"
+    # Create task in the list (with parent = subtask)
+    url = f"{CLICKUP_API_BASE}/list/{list_id}/task"
     
     try:
         response = requests.post(
