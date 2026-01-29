@@ -48,9 +48,9 @@ SUPPORT_KEYWORDS = [
 
 MODELISATION_KEYWORDS = [
     'modéliser', 'modeliser', 'modélisation', 'modelisation',
-    'créer', 'creer', 'création', 'creation',
-    '3d', 'ar', 'réalité augmentée', 'realite augmentee',
-    'scanner', 'scan', 'objet', 'produit', 'visualiser'
+    'créer un objet', 'creer un objet', 'création 3d', 'creation 3d',
+    '3d', 'réalité augmentée', 'realite augmentee', 'augmented reality',
+    'scanner', 'visualiser en ar', 'rendu 3d', 'render'
 ]
 
 # Extensions de fichiers 3D
@@ -115,8 +115,8 @@ def rule_based_classify(objet: str, description: str, fichiers: list, source: st
     support_count = count_keywords(text, SUPPORT_KEYWORDS)
     modelisation_count = count_keywords(text, MODELISATION_KEYWORDS)
     
-    # Debug temporaire
-    print(f"  [DEBUG] text='{text[:50]}...' support={support_count}, modelisation={modelisation_count}")
+    # Debug (désactiver en production)
+    # print(f"  [DEBUG] support={support_count}, modelisation={modelisation_count}")
     
     # Règle 2: Mots-clés SUPPORT dominants (sans mots-clés modélisation)
     if support_count >= 2 and modelisation_count == 0:
