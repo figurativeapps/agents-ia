@@ -115,8 +115,8 @@ def rule_based_classify(objet: str, description: str, fichiers: list, source: st
     support_count = count_keywords(text, SUPPORT_KEYWORDS)
     modelisation_count = count_keywords(text, MODELISATION_KEYWORDS)
     
-    # Debug (peut être supprimé en production)
-    # print(f"  [DEBUG] support={support_count}, modelisation={modelisation_count}")
+    # Debug temporaire
+    print(f"  [DEBUG] text='{text[:50]}...' support={support_count}, modelisation={modelisation_count}")
     
     # Règle 2: Mots-clés SUPPORT dominants (sans mots-clés modélisation)
     if support_count >= 2 and modelisation_count == 0:
