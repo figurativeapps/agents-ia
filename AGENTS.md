@@ -4,20 +4,74 @@
 
 You operate within a 3-layer architecture (DOE Framework) to manage three distinct workflows: **Lead Generation**, **PDF Creation**, and **Request Handling**.
 
+---
+
+## Quick Reference: Mode Selection
+
+| User Intent | Mode | Directive to Load |
+|-------------|------|-------------------|
+| Find leads, scrape, enrich contacts | **A (Hunter)** | `workflow_global_lead_gen.md` |
+| Generate PDF proposal | **B (Maker)** | `workflow_pdf_maker.md` |
+| Process support/modeling request | **C (Handler)** | `workflow_request_handler.md` |
+
+---
+
+## Script Registry
+
+### Mode A: Lead Generation (Hunter)
+
+| Script | Function | Input → Output |
+|--------|----------|----------------|
+| `scrape_google_maps.py` | Search businesses via Serper | Query → JSON results |
+| `2_qualify_site.py` | Validate website quality | URL → Score |
+| `5_enrich.py` | Get contact info (Apollo/Hunter) | Company → Email/Phone |
+| `save_to_excel.py` | Save leads to Excel | Data → `Generate_leads.xlsx` |
+| `sync_hubspot.py` | Push leads to HubSpot | Excel → HubSpot CRM |
+| `sync_from_hubspot.py` | Pull updates from HubSpot | HubSpot → Excel |
+
+**Directives:** `workflow_global_lead_gen.md`, `waterfall_strategy.md`, `email_templates.md`
+
+### Mode B: PDF Maker
+
+| Script | Function | Input → Output |
+|--------|----------|----------------|
+| `8_generate_pdf.py` | Generate PDF from template | Data + Template → PDF |
+| `create_excel_template.py` | Create Excel input template | → Excel template |
+
+**Directives:** `workflow_pdf_maker.md`
+
+### Mode C: Support Handler
+
+| Script | Function | Input → Output |
+|--------|----------|----------------|
+| `webhook_server.py` | Receive requests (FastAPI) | HTTP → Redis queue |
+| `classify_request.py` | Classify SUPPORT/MODELISATION | Text → Type + Confidence |
+| `upload_files.py` | Upload files to R2 | Files → Public URLs |
+| `hubspot_ticket.py` | Manage contacts, tickets, notes | Data → HubSpot objects |
+| `clickup_subtask.py` | Create modeling subtask | Data → ClickUp task |
+| `send_notification.py` | Email admin notification | Data → SMTP |
+| `test_request_handler.py` | Test full workflow | Payload → Results |
+
+**Directives:** `workflow_request_handler.md`, `classify_request.md`, `create_hubspot_ticket.md`, `create_clickup_subtask.md`, `notify_admin.md`
+
+**Documentation:** `docs/PROCESSUS_SUPPORT.md`
+
+### Shared / Utilities
+
+| Script | Function | Used by |
+|--------|----------|---------|
+| `diagnose_hubspot_properties.py` | Debug HubSpot fields | All modes |
+
+---
+
 ## The 3-Layer Architecture
 
 **Layer 1: Directive (What to do)**
 - Lives in `directives/`. These are your SOPs.
-- **`workflow_global_lead_gen.md`**: For scraping, enriching (Apollo/LinkedIn), and syncing to Excel/HubSpot.
-- **`workflow_pdf_maker.md`**: For generating customized PDF proposals using templates.
-- **`workflow_request_handler.md`**: For processing support/modeling requests from Figurative platform.
-- **`email_templates.md`**: For copywriting rules.
+- Load the appropriate workflow file based on user intent.
 
 **Layer 2: Orchestration (Decision making)**
 - This is you. Your job is intelligent routing based on User Intent.
-- **Mode A (Hunter):** If user wants leads -> Read `workflow_global_lead_gen.md`.
-- **Mode B (Maker):** If user wants a proposal -> Read `workflow_pdf_maker.md`.
-- **Mode C (Handler):** If webhook receives a support/modeling request -> Read `workflow_request_handler.md`.
 - You rely on deterministic scripts. You do not scrape or generate PDFs manually.
 
 **Layer 3: Execution (Doing the work)**
@@ -28,69 +82,36 @@ You operate within a 3-layer architecture (DOE Framework) to manage three distin
 
 ## Operating Principles
 
-**1. Check for tools first**
-Before writing code, check `execution/`.
-- Need to verify a site? Use `2_qualify_site.py`.
-- Need to enrich? Use `5_enrich.py`.
-- Need to save? Use `save_to_excel.py`.
-
-**2. Excel & CRM Integrity (Crucial)**
-- **Excel Locking:** Before running `save_to_excel.py`, warn the user if they need to close `Generate_leads.xlsx`.
-- **HubSpot Safety:** Always Search-Before-Create. We use an "Upsert" logic (Update if exists, Create if new) to prevent duplicates.
-
-**3. Self-anneal when things break**
-- If a script fails (e.g., API limit, selector change), read the error.
-- Fix the script in `execution/`.
-- Retry.
-- Update the directive if the process needs to change permanently.
-
-## File Organization
-
-**Deliverables:**
-- **`Generate_leads.xlsx`**: The main Excel database (Root folder).
-- **`output/*.pdf`**: Generated proposals.
-- **HubSpot CRM**: Cloud database.
-
-**Directory Structure:**
-- `.tmp/` - Intermediate JSONs or downloads. Delete after use.
-- `execution/` - Python scripts (The Tools).
-- `directives/` - Markdown SOPs (The Manuals).
-- `docs/` - Documentation and guides.
-- `templates/` - Jinja2 HTML templates (`plaquette_base.html`) and CSS.
-- `output/` - Final PDF storage.
-- `.env` - API Keys (Serper, Firecrawl, Hunter, HubSpot, Anthropic, ClickUp, R2).
-
-## Summary
-
-You are the engine behind a B2B automation machine.
-1. **Identify Intent:** Lead Gen, PDF Creation, or Request Handling?
-2. **Load Directive:** Read the specific `.md` file.
-3. **Execute:** Run the Python scripts sequence.
-4. **Finalize:** Ensure Excel is updated and HubSpot is synced.
-
-Be pragmatic. Be reliable. Self-anneal.
+1. **Check Script Registry first** - Before writing code, check if a script already exists above.
+2. **Excel Locking** - Warn user to close `Generate_leads.xlsx` before running `save_to_excel.py`.
+3. **HubSpot Safety** - Always Search-Before-Create (Upsert logic to prevent duplicates).
+4. **Self-anneal** - If script fails, read error, fix script, retry, update directive if needed.
 
 ---
 
-## Request Handler Workflow (Mode C)
+## Directory Structure
 
-When processing incoming requests from Figurative platform:
+```
+agents_ia/
+├── directives/     # SOPs (9 files) - What to do
+├── execution/      # Scripts (16 files) - How to do it
+├── docs/           # Documentation
+├── templates/      # Jinja2 templates for PDF
+├── output/         # Generated PDFs
+├── .tmp/           # Temp files (delete after use)
+├── .env            # API Keys
+└── Generate_leads.xlsx  # Master database
+```
 
-**Scripts available:**
-- `classify_request.py` - LLM classification (SUPPORT/MODELISATION)
-- `hubspot_ticket.py` - Create tickets and manage contacts
-- `clickup_subtask.py` - Create subtasks for modeling requests
-- `upload_files.py` - Upload 3D files to Cloudflare R2
-- `send_notification.py` - Notify admin team
+---
 
-**Flow:**
-1. Webhook receives payload (source, objet, description, user_email, fichiers)
-2. Classify request type (rules + LLM if ambiguous)
-3. Upload files to R2 (if modeling + files)
-4. Find/create contact in HubSpot
-5. Create ticket in Help Desk (Pipeline 0, Stage 1)
-6. Create Note on contact with file URLs (if files)
-7. Create ClickUp subtask with full description + URLs (if modeling)
-8. Send notification to admin
+## Workflow Execution Pattern
 
-**Documentation:** `docs/PROCESSUS_SUPPORT.md`
+```
+1. Identify Intent → Select Mode (A/B/C)
+2. Load Directive → Read workflow_*.md
+3. Execute Scripts → Run in sequence from registry
+4. Finalize → Sync to Excel/HubSpot
+```
+
+Be pragmatic. Be reliable. Self-anneal.
