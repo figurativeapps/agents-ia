@@ -1,22 +1,26 @@
 """
 HubSpot Help Desk Ticket Management
-Creates tickets and manages contact associations.
+Creates tickets, notes, and manages contact associations.
 
 Usage:
     python hubspot_ticket.py --action find_or_create_contact --email "user@example.com" --name "John Doe"
     python hubspot_ticket.py --action create_ticket --contact-id 123 --objet "Title" --description "Content" --type SUPPORT
+    python hubspot_ticket.py --action create_note --contact-id 123 --objet "Fichiers reçus" --fichiers-urls '["https://..."]'
 """
 
 import os
 import sys
 import json
 import argparse
+from datetime import datetime
 from dotenv import load_dotenv
 from hubspot import HubSpot
 from hubspot.crm.contacts import SimplePublicObjectInputForCreate as ContactInput
 from hubspot.crm.tickets import SimplePublicObjectInputForCreate as TicketInput
 from hubspot.crm.tickets import ApiException as TicketApiException
 from hubspot.crm.contacts import ApiException as ContactApiException
+from hubspot.crm.objects.notes import SimplePublicObjectInputForCreate as NoteInput
+from hubspot.crm.objects.notes import ApiException as NoteApiException
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Fix Windows console encoding
@@ -209,10 +213,119 @@ def create_ticket(
         return {"ticket_id": None, "error": str(e)}
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def create_note(
+    contact_id: str,
+    objet: str,
+    fichiers_urls: list,
+    ticket_id: str = None,
+    type_demande: str = "MODELISATION"
+) -> dict:
+    """
+    Create a Note on a contact with file URLs.
+    
+    This note will appear in the contact's Activity timeline,
+    making file history visible on the contact record.
+    
+    Args:
+        contact_id: HubSpot contact ID
+        objet: Subject/title of the request
+        fichiers_urls: List of R2 public URLs
+        ticket_id: Optional ticket ID to associate the note with
+        type_demande: Type of request (for note title)
+    
+    Returns:
+        {"note_id": str, "success": bool} or {"error": str}
+    """
+    if not fichiers_urls:
+        return {"note_id": None, "success": True, "message": "No files to note"}
+    
+    client = get_hubspot_client()
+    hub_id = HUBSPOT_HUB_ID
+    
+    # Build note content with HTML formatting (HubSpot notes support HTML)
+    note_body = f"<strong>📁 Fichiers reçus - {type_demande}</strong><br><br>"
+    note_body += f"<strong>Objet:</strong> {objet}<br><br>"
+    note_body += "<strong>Fichiers:</strong><br>"
+    
+    for url in fichiers_urls:
+        # Extract filename from URL
+        filename = url.split("/")[-1] if "/" in url else url
+        note_body += f'• <a href="{url}">{filename}</a><br>'
+    
+    note_body += f"<br><em>Reçu le {datetime.now().strftime('%d/%m/%Y à %H:%M')}</em>"
+    
+    # Note properties
+    properties = {
+        "hs_note_body": note_body,
+        "hs_timestamp": datetime.now().isoformat()
+    }
+    
+    try:
+        note_input = NoteInput(properties=properties)
+        note = client.crm.objects.notes.basic_api.create(
+            simple_public_object_input_for_create=note_input
+        )
+        
+        note_id = note.id
+        print(f"✅ Created note: {note_id}")
+        
+        # Associate note with contact
+        try:
+            from hubspot.crm.associations.v4 import BatchInputPublicDefaultAssociationMultiPost
+            from hubspot.crm.associations.v4.models import PublicDefaultAssociationMultiPost
+            
+            # Associate note -> contact
+            association_input = BatchInputPublicDefaultAssociationMultiPost(
+                inputs=[
+                    PublicDefaultAssociationMultiPost(
+                        _from={"id": note_id},
+                        to={"id": contact_id}
+                    )
+                ]
+            )
+            client.crm.associations.v4.batch_api.create_default(
+                from_object_type="notes",
+                to_object_type="contacts",
+                batch_input_public_default_association_multi_post=association_input
+            )
+            print(f"🔗 Associated note with contact {contact_id}")
+            
+            # Also associate with ticket if provided
+            if ticket_id:
+                ticket_association = BatchInputPublicDefaultAssociationMultiPost(
+                    inputs=[
+                        PublicDefaultAssociationMultiPost(
+                            _from={"id": note_id},
+                            to={"id": ticket_id}
+                        )
+                    ]
+                )
+                client.crm.associations.v4.batch_api.create_default(
+                    from_object_type="notes",
+                    to_object_type="tickets",
+                    batch_input_public_default_association_multi_post=ticket_association
+                )
+                print(f"🔗 Associated note with ticket {ticket_id}")
+                
+        except Exception as e:
+            print(f"⚠️  Note association failed: {str(e)[:100]}")
+        
+        return {
+            "note_id": note_id,
+            "success": True,
+            "hub_id": hub_id
+        }
+        
+    except NoteApiException as e:
+        print(f"❌ Error creating note: {str(e)[:200]}")
+        return {"note_id": None, "success": False, "error": str(e)}
+
+
 def main():
     parser = argparse.ArgumentParser(description="HubSpot Ticket Management")
     parser.add_argument("--action", required=True, 
-                        choices=["find_or_create_contact", "create_ticket"],
+                        choices=["find_or_create_contact", "create_ticket", "create_note"],
                         help="Action to perform")
     
     # Contact arguments
@@ -220,13 +333,14 @@ def main():
     parser.add_argument("--name", help="User name")
     
     # Ticket arguments
-    parser.add_argument("--contact-id", help="Contact ID for ticket")
-    parser.add_argument("--objet", help="Ticket subject")
+    parser.add_argument("--contact-id", help="Contact ID for ticket/note")
+    parser.add_argument("--objet", help="Ticket/note subject")
     parser.add_argument("--description", help="Ticket description")
     parser.add_argument("--type", choices=["SUPPORT", "MODELISATION"], help="Request type")
     parser.add_argument("--source", help="Form source")
     parser.add_argument("--reclassifie", action="store_true", help="Was reclassified")
     parser.add_argument("--fichiers-urls", help="JSON array of file URLs")
+    parser.add_argument("--ticket-id", help="Ticket ID (for note association)")
     
     parser.add_argument("--output", help="Output JSON file path")
     
@@ -253,6 +367,21 @@ def main():
             fichiers_urls=fichiers_urls,
             source_formulaire=args.source,
             reclassifie=args.reclassifie
+        )
+    
+    elif args.action == "create_note":
+        if not args.contact_id or not args.fichiers_urls:
+            print("❌ --contact-id and --fichiers-urls are required for create_note")
+            sys.exit(1)
+        
+        fichiers_urls = json.loads(args.fichiers_urls)
+        
+        result = create_note(
+            contact_id=args.contact_id,
+            objet=args.objet or "Fichiers reçus",
+            fichiers_urls=fichiers_urls,
+            ticket_id=args.ticket_id,
+            type_demande=args.type or "MODELISATION"
         )
     
     print(json.dumps(result, indent=2, ensure_ascii=False))

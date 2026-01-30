@@ -85,9 +85,12 @@ When processing incoming requests from Figurative platform:
 
 **Flow:**
 1. Webhook receives payload (source, objet, description, user_email, fichiers)
-2. Classify request type via LLM
+2. Classify request type (rules + LLM if ambiguous)
 3. Upload files to R2 (if modeling + files)
 4. Find/create contact in HubSpot
 5. Create ticket in Help Desk (Pipeline 0, Stage 1)
-6. Create ClickUp subtask (if modeling)
-7. Send notification to admin
+6. Create Note on contact with file URLs (if files)
+7. Create ClickUp subtask with full description + URLs (if modeling)
+8. Send notification to admin
+
+**Documentation:** `docs/PROCESSUS_SUPPORT.md`

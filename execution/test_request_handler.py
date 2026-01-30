@@ -183,7 +183,36 @@ def test_hubspot_ticket(contact_id: str, payload: dict, classification: dict, li
         return {"ticket_id": "67890", "ticket_url": "https://app.hubspot.com/contacts/XXX/ticket/67890"}
 
 
-def test_clickup_subtask(payload: dict, ticket_url: str, live: bool = False):
+def test_hubspot_note(contact_id: str, ticket_id: str, payload: dict, fichiers_urls: list, classification: dict, live: bool = False):
+    """Test HubSpot note creation with file URLs"""
+    print("\n" + "="*60)
+    print("TEST: HubSpot Note (fichiers sur fiche contact)")
+    print("="*60)
+    
+    print(f"\nContact ID: {contact_id}")
+    print(f"Ticket ID: {ticket_id}")
+    print(f"Files: {len(fichiers_urls)} URL(s)")
+    for url in fichiers_urls:
+        print(f"  - {url}")
+    
+    if live:
+        from hubspot_ticket import create_note
+        result = create_note(
+            contact_id=contact_id,
+            objet=payload['objet'],
+            fichiers_urls=fichiers_urls,
+            ticket_id=ticket_id,
+            type_demande=classification['type_final']
+        )
+        print(f"\nResult:")
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return result
+    else:
+        print("\n[DRY RUN] Would call create_note()")
+        return {"note_id": "note123", "success": True}
+
+
+def test_clickup_subtask(payload: dict, ticket_url: str, fichiers_urls: list = None, live: bool = False):
     """Test ClickUp subtask creation"""
     print("\n" + "="*60)
     print("TEST: ClickUp Subtask")
@@ -191,6 +220,8 @@ def test_clickup_subtask(payload: dict, ticket_url: str, live: bool = False):
     
     print(f"\nEmail: {payload['user_email']}")
     print(f"Objet: {payload['objet']}")
+    print(f"Description: {payload['description'][:80]}..." if len(payload.get('description', '')) > 80 else f"Description: {payload.get('description', '')}")
+    print(f"Fichiers: {len(fichiers_urls or [])} URL(s)")
     print(f"Ticket URL: {ticket_url}")
     
     if live:
@@ -198,7 +229,9 @@ def test_clickup_subtask(payload: dict, ticket_url: str, live: bool = False):
         result = create_subtask(
             objet=payload['objet'],
             user_email=payload['user_email'],
-            ticket_url=ticket_url
+            ticket_url=ticket_url,
+            description=payload.get('description', ''),
+            fichiers_urls=fichiers_urls or []
         )
         print(f"\nResult:")
         print(json.dumps(result, indent=2, ensure_ascii=False))
@@ -258,19 +291,34 @@ def run_full_test(payload_name: str = "support_simple", live: bool = False):
     contact_result = test_hubspot_contact(payload, live)
     contact_id = contact_result.get("contact_id")
     
-    # Step 4: HubSpot Ticket
+    # Step 4: HubSpot Ticket (avec URLs fichiers si présents)
+    # Note: En production, les fichiers seraient uploadés sur R2 avant cette étape
+    # et on passerait les URLs R2 ici. Pour le test, on simule avec des URLs fictives.
+    fichiers_urls = []
+    if payload.get('fichiers'):
+        fichiers_urls = [f"https://pub-xxx.r2.dev/requests/test/{f['name']}" for f in payload['fichiers']]
+    
     ticket_result = test_hubspot_ticket(contact_id, payload, classification, live)
+    ticket_id = ticket_result.get("ticket_id", "67890")
     ticket_url = ticket_result.get("ticket_url", "https://example.com/ticket/123")
     
-    # Step 5: ClickUp (only for MODELISATION)
+    # Step 5: HubSpot Note (only if files present)
+    if fichiers_urls:
+        note_result = test_hubspot_note(contact_id, ticket_id, payload, fichiers_urls, classification, live)
+    else:
+        print("\n" + "="*60)
+        print("SKIP: HubSpot Note (no files in request)")
+        print("="*60)
+    
+    # Step 6: ClickUp (only for MODELISATION)
     if classification['type_final'] == "MODELISATION":
-        clickup_result = test_clickup_subtask(payload, ticket_url, live)
+        clickup_result = test_clickup_subtask(payload, ticket_url, fichiers_urls, live)
     else:
         print("\n" + "="*60)
         print("SKIP: ClickUp Subtask (not a MODELISATION request)")
         print("="*60)
     
-    # Step 6: Notification
+    # Step 7: Notification
     notification_result = test_notification(payload, ticket_url, classification, live)
     
     print("\n" + "#"*60)

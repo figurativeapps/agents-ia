@@ -3,7 +3,7 @@ ClickUp Subtask Creation
 Creates subtasks under a parent task for tracking modeling requests.
 
 Usage:
-    python clickup_subtask.py --objet "Request title" --email "user@example.com" --ticket-url "https://..."
+    python clickup_subtask.py --objet "Request title" --email "user@example.com" --ticket-url "https://..." --description "Full request content" --fichiers-urls '["https://..."]'
 """
 
 import os
@@ -58,6 +58,8 @@ def create_subtask(
     objet: str,
     user_email: str,
     ticket_url: str,
+    description: str = None,
+    fichiers_urls: list = None,
     parent_task_id: str = None
 ) -> dict:
     """
@@ -67,6 +69,8 @@ def create_subtask(
         objet: Request title
         user_email: Client email
         ticket_url: HubSpot ticket URL
+        description: Full description/content of the original request
+        fichiers_urls: List of R2 file URLs
         parent_task_id: Override parent task ID (optional)
     
     Returns:
@@ -91,19 +95,41 @@ def create_subtask(
     # Build subtask name and description
     name = f"Demande {user_email}"
     
-    description = f"""**Demande de modélisation**
+    # Build full task description with all details
+    task_description = f"""**Demande de modélisation**
 
-- **Client** : {user_email}
-- **Objet** : {objet}
-- **Ticket HubSpot** : {ticket_url}
+**Client** : {user_email}
+**Objet** : {objet}
+**Ticket HubSpot** : {ticket_url}
 
 ---
-Créé automatiquement par l'agent DOE."""
+
+## Description de la demande
+
+{description or "(Aucune description fournie)"}
+
+"""
+    
+    # Add files section if files are present
+    if fichiers_urls and len(fichiers_urls) > 0:
+        task_description += """---
+
+## Fichiers joints
+
+"""
+        for url in fichiers_urls:
+            # Extract filename from URL
+            filename = url.split("/")[-1] if "/" in url else url
+            task_description += f"- [{filename}]({url})\n"
+    
+    task_description += """
+---
+*Créé automatiquement par l'agent DOE.*"""
 
     # API payload - create task with parent to make it a subtask
     payload = {
         "name": name,
-        "description": description,
+        "markdown_description": task_description,  # Use markdown for better formatting
         "parent": parent_id,  # This makes it a subtask
         "status": "to do",
         "priority": 3  # Normal priority
@@ -176,10 +202,15 @@ def main():
     parser.add_argument("--objet", required=True, help="Request title")
     parser.add_argument("--email", required=True, help="User email")
     parser.add_argument("--ticket-url", required=True, help="HubSpot ticket URL")
+    parser.add_argument("--description", help="Full request description/content")
+    parser.add_argument("--fichiers-urls", help="JSON array of file URLs")
     parser.add_argument("--parent-id", help="Override parent task ID")
     parser.add_argument("--output", help="Output JSON file path")
     
     args = parser.parse_args()
+    
+    # Parse file URLs if provided
+    fichiers_urls = json.loads(args.fichiers_urls) if args.fichiers_urls else []
     
     print(f"📋 Creating ClickUp subtask for: {args.email}")
     
@@ -187,6 +218,8 @@ def main():
         objet=args.objet,
         user_email=args.email,
         ticket_url=args.ticket_url,
+        description=args.description,
+        fichiers_urls=fichiers_urls,
         parent_task_id=args.parent_id
     )
     
