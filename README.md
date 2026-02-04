@@ -1,271 +1,180 @@
-# AI-Powered B2B Lead Generation System
+# DOE Framework - AI Agent Automation
 
-An intelligent, automated lead generation system built with Python and AI orchestration. This system scrapes Google Maps, qualifies websites, enriches contact data, and syncs everything to HubSpot CRM.
-
-## 🏗️ Architecture
-
-This project follows the **DOE Framework** (Directive → Orchestration → Execution):
-
-- **Layer 1 (Directive):** Business logic and SOPs in `directives/`
-- **Layer 2 (Orchestration):** AI agent that routes tasks intelligently
-- **Layer 3 (Execution):** Deterministic Python scripts in `execution/`
-
-## 📁 Project Structure
-
-```
-Agents AI/
-│
-├── .env                        # API keys (Serper, Firecrawl, Hunter, HubSpot)
-├── requirements.txt            # Python dependencies
-├── AGENTS.md                   # AI orchestration instructions (DOE Framework)
-├── Generate_leads.xlsx         # Master database (Excel - Source of Truth)
-│
-├── directives/                 # Layer 1: SOPs (Directive)
-│   ├── workflow_global_lead_gen.md
-│   ├── workflow_pdf_maker.md
-│   ├── waterfall_strategy.md
-│   └── email_templates.md
-│
-├── execution/                  # Layer 3: Python scripts (Execution)
-│   ├── scrape_google_maps.py   # Step 1: Google Maps scraping
-│   ├── 2_qualify_site.py       # Step 2: Website qualification
-│   ├── 5_enrich.py             # Step 3: Waterfall enrichment
-│   ├── save_to_excel.py        # Step 4: Excel database save
-│   ├── sync_hubspot.py         # Step 5: HubSpot CRM sync
-│   └── 8_generate_pdf.py       # PDF proposal generator
-│
-├── docs/                       # Documentation & guides
-│   ├── QUICKSTART.md
-│   ├── HUBSPOT_MAPPING.md
-│   ├── GUIDE_CHAMPS_HUBSPOT.md
-│   └── GUIDE_STATUT_SYNC.md
-│
-├── templates/                  # HTML/CSS for PDFs
-├── output/                     # Generated PDFs
-└── .tmp/                       # Temporary files (auto-cleaned)
-```
-
-## 🚀 Quick Start
-
-### 1. Install Dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 2. Configure API Keys
-
-Copy `.env.template` to `.env` and add your API keys:
-
-```bash
-cp .env.template .env
-```
-
-Edit `.env` with your actual keys:
-- **SERPER_API_KEY** - For Google Maps search & OSINT (required)
-- **FIRECRAWL_API_KEY** - For website scraping (required)
-- **HUNTER_API_KEY** - For email pattern detection (optional but recommended)
-- **HUBSPOT_API_KEY** - For CRM integration (required for sync)
-
-### 3. Create Excel Database
-
-```bash
-python execution/create_excel_template.py
-```
-
-This creates `Generate_leads.xlsx` with the proper structure.
-
-## 📊 Lead Generation Workflow
-
-### Full Pipeline
-
-Run each step sequentially:
-
-```bash
-# Step 1: Scrape Google Maps
-python execution/scrape_google_maps.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
-
-# Step 2: Qualify websites
-python execution/2_qualify_site.py --input .tmp/google_maps_results.json
-
-# Step 3: Enrich with Waterfall Strategy (Serper OSINT + Hunter.io)
-python execution/5_enrich.py --input .tmp/qualified_leads.json
-
-# Step 4: Save to Excel
-python execution/save_to_excel.py --input .tmp/enriched_leads.json
-
-# Step 5: Sync to HubSpot
-python execution/sync_hubspot.py --input .tmp/enriched_leads.json
-```
-
-### What Each Step Does
-
-1. **Scraping**: Finds businesses on Google Maps with phone numbers
-2. **Qualification**: Checks if websites are active, finds emails, detects e-commerce. **FILTERS OUT** businesses without e-commerce websites
-3. **Enrichment**: Uses **Waterfall Strategy** to find decision maker info (see below)
-4. **Excel Save**: Stores in master database with deduplication
-5. **HubSpot Sync**: Creates/updates CRM contacts and companies (no duplicates)
-
-### 🌊 Waterfall Enrichment Strategy
-
-Step 3 uses an intelligent 3-stage approach to minimize API costs while maximizing data quality:
-
-**Stage 1: OSINT with Serper (Free)**
-- Searches LinkedIn for decision maker profiles
-- Extracts name and job title
-- **Cost**: ~0.002€ per lead
-
-**Stage 2: Pattern Matching with Hunter.io (Freemium)**
-- Finds email patterns for the company domain
-- Retrieves generic emails if available
-- **Cost**: ~0.01€ per lead
-
-**Stage 3: Email Reconstruction (Free)**
-- Combines data from stages 1 & 2 to build personalized emails
-- Falls back to generic emails if available, otherwise marks as "not found"
-- **Cost**: Free
-
-**Result**: 97% cost savings vs traditional enrichment APIs with 85-90% success rate.
-
-📖 **Full documentation**: See [directives/waterfall_strategy.md](directives/waterfall_strategy.md)
-
-## 📄 PDF Generation
-
-Generate customized proposals:
-
-```bash
-python execution/8_generate_pdf.py --company "Acme Corp" --industry "Restaurants"
-```
-
-The system will:
-- Look up company data from `Generate_leads.xlsx`
-- Customize the template with their info
-- Generate a professional PDF in `output/`
-
-## 🔄 Data Flow
-
-```
-Google Maps → Firecrawl → Waterfall (Serper+Hunter) → Excel (Source of Truth) → HubSpot CRM
-                                                                                      ↓
-                                                                                PDF Generator
-```
-
-## 🛡️ Safety Features
-
-### Excel Locking
-The system checks if `Generate_leads.xlsx` is open before writing. Close the file before running `save_to_excel.py`.
-
-### HubSpot Deduplication
-Uses **Upsert logic** (Search → Update or Create) to prevent duplicate contacts:
-- Searches by email first
-- Updates existing records
-- Creates new contacts only if not found
-
-### Rate Limiting
-All scripts include sleep delays to respect API rate limits.
-
-## 🧪 Testing
-
-Test individual components:
-
-```bash
-# Test Google Maps scraping only
-python execution/scrape_google_maps.py --industry "Restaurants" --location "Paris" --max_leads 5
-
-# Test website qualification
-python execution/2_qualify_site.py --input .tmp/google_maps_results.json
-
-# Generate a test PDF
-python execution/8_generate_pdf.py --company "Test Company" --industry "Services"
-```
-
-## 📝 Customization
-
-### Email Templates
-Edit `directives/email_templates.md` for cold outreach copy.
-
-### PDF Templates
-Modify `templates/plaquette_base.html` and `templates/style.css` for custom branding.
-
-### Workflow Logic
-Update `directives/workflow_global_lead_gen.md` for process changes.
-
-## 🤖 AI Orchestration
-
-The AI agent (`AGENTS.md`) intelligently routes requests:
-
-- **"Find me 50 cuisinistes in Lyon"** → Runs lead generation workflow
-- **"Generate a proposal for Acme Corp"** → Runs PDF generation
-- **"Sync everything to HubSpot"** → Runs CRM sync only
-
-## 🐛 Troubleshooting
-
-### Excel Permission Error
-```
-⚠️ WARNING: Generate_leads.xlsx is currently open!
-```
-**Solution:** Close Excel and try again.
-
-### API Rate Limit
-```
-⚠️ Rate limit reached - waiting 60s
-```
-**Solution:** The script auto-retries. Just wait.
-
-### Missing API Key
-```
-❌ SERPER_API_KEY not found in .env file
-```
-**Solution:** Add the key to `.env` file.
-
-## 📊 Excel Database Schema
-
-| Column | Description |
-|--------|-------------|
-| `Industrie` | Business sector (e.g., "Cuisinistes") |
-| `Nom_Entreprise` | Company name |
-| `Adresse` | Full address |
-| `Ville` | City |
-| `Code_Postal` | Postal code |
-| `Site_Web` | Website URL |
-| `Tel_Standard` | Main phone (from Google) |
-| `Email_Generique` | Generic email (from website) |
-| `Email_Decideur` | Decision maker email (from enrichment) |
-| `Nom_Decideur` | Decision maker name |
-| `Poste_Decideur` | Job title |
-| `LinkedIn_URL` | LinkedIn profile |
-| `Ecommerce` | Has e-commerce (Oui/Non) |
-| `Date_Ajout` | Date added |
-| `Statut_Sync` | HubSpot sync status (New/Synced/Deleted) |
-
-## 🔐 Security
-
-- Never commit `.env` to version control
-- API keys are loaded from environment variables
-- HubSpot uses OAuth token authentication
-- All API calls use HTTPS
-
-## 📈 Performance
-
-- **Scraping:** ~1 second per business
-- **Qualification:** ~2 seconds per website
-- **Enrichment:** ~3 seconds per contact
-- **Full pipeline:** ~6 seconds per lead
-
-For 50 leads: ~5 minutes total
-
-## 🆘 Support
-
-Issues with:
-- **Scripts:** Check error messages in terminal
-- **APIs:** Verify keys in `.env`
-- **Excel:** Ensure file is closed before writing
-- **HubSpot:** Check API key permissions
-
-## 📜 License
-
-MIT License - Feel free to use and modify for your business.
+> A multi-agent automation framework following the Directive-Orchestration-Execution pattern for B2B operations.
 
 ---
 
-**Built with:** Python, Pandas, HubSpot API, Apollo.io, Firecrawl, Serper, Jinja2, WeasyPrint
+## What is the DOE Framework?
+
+DOE (Directive → Orchestration → Execution) is a three-layer architecture for building AI-powered automation systems:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  LAYER 1: DIRECTIVES          (directives/*.md)             │
+│  → Business logic and standard operating procedures         │
+├─────────────────────────────────────────────────────────────┤
+│  LAYER 2: ORCHESTRATION       (AGENTS.md)                   │
+│  → AI agent that decides which workflow to execute          │
+├─────────────────────────────────────────────────────────────┤
+│  LAYER 3: EXECUTION           (execution/*.py)              │
+│  → Deterministic Python scripts that do the actual work     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Core Principle**: The AI agent reads directives (SOPs) and executes pre-built scripts. It doesn't write code on the fly.
+
+---
+
+## Key Features
+
+- **Multi-Agent**: Support for multiple independent workflows (Lead Gen, Document Creation, Request Handling)
+- **Self-Healing**: Agents can detect errors, fix scripts, and retry
+- **No-Code SOPs**: Business logic defined in markdown files
+- **Modular Scripts**: Reusable Python tools for common tasks
+- **API-First**: Integrates with HubSpot, ClickUp, cloud storage, and LLMs
+
+---
+
+## Project Structure
+
+```
+agents_ia/
+├── AGENTS.md              # Agent orchestration instructions
+├── directives/            # Business logic and workflows (SOPs)
+│   ├── workflow_*.md
+│   └── *.md
+├── execution/             # Python automation scripts
+│   ├── scrape_*.py
+│   ├── enrich_*.py
+│   └── *.py
+├── docs/                  # Documentation
+├── templates/             # Document templates
+├── .env                   # API keys (not versioned)
+└── Generate_leads.xlsx    # Master database
+```
+
+---
+
+## Operating Modes
+
+The framework supports 3 distinct operating modes:
+
+| Mode | Purpose | Example Use Case |
+|------|---------|------------------|
+| **Mode A** | Data collection and enrichment | B2B lead generation, web scraping |
+| **Mode B** | Document generation | PDF proposals, reports |
+| **Mode C** | Request processing | Support tickets, task automation |
+
+Each mode has its own set of directives and scripts.
+
+---
+
+## Quick Start
+
+### 1. Installation
+
+```bash
+git clone <repo-url>
+cd agents_ia
+pip install -r requirements.txt
+```
+
+### 2. Configuration
+
+```bash
+cp .env.template .env
+# Edit .env with your API keys
+```
+
+### 3. Run a Workflow
+
+Check `AGENTS.md` for the complete script registry and usage instructions.
+
+---
+
+## How It Works
+
+### 1. User Request
+*"Find 50 B2B leads in Lyon"*
+
+### 2. Agent Reads Directives
+The AI agent loads `directives/workflow_*.md` based on the request type.
+
+### 3. Agent Executes Scripts
+Runs the appropriate sequence from `execution/`:
+```
+scrape → qualify → enrich → save → sync
+```
+
+### 4. Results
+Data stored in Excel and synced to CRM.
+
+---
+
+## Core Components
+
+### Directives (Layer 1)
+
+Markdown files defining:
+- Workflow steps
+- Business rules
+- API strategies
+- Email templates
+
+### Scripts (Layer 3)
+
+Python tools for:
+- Web scraping
+- Data enrichment
+- CRM synchronization
+- Document generation
+- API integrations
+
+### Orchestration (Layer 2)
+
+The AI agent (`AGENTS.md`) that:
+- Routes requests to the right workflow
+- Executes scripts in sequence
+- Handles errors and retries
+- Ensures data integrity
+
+---
+
+## Safety Features
+
+- **No Duplicates**: Upsert logic for CRM operations
+- **File Locking**: Prevents concurrent Excel writes
+- **Rate Limiting**: Respects API quotas
+- **Self-Anneal**: Auto-fixes common errors
+
+---
+
+## Dependencies
+
+- Python 3.11+
+- Pandas (data manipulation)
+- Requests (API calls)
+- FastAPI (webhook server)
+- Redis (task queue)
+- WeasyPrint (PDF generation)
+
+See `requirements.txt` for full list.
+
+---
+
+## Documentation
+
+- `AGENTS.md` - Agent instructions and script registry
+- `docs/QUICKSTART.md` - Getting started guide
+- `directives/` - Individual workflow documentation
+
+---
+
+## License
+
+MIT License - Free to use and modify.
+
+---
+
+**Architecture Pattern**: Directive-Orchestration-Execution (DOE)
+**Use Case**: B2B Automation, Lead Generation, Document Processing
