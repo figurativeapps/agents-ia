@@ -1,6 +1,7 @@
 # Processus Support Figurative
 
 > Workflow automatisé pour traiter les demandes clients (Support / Modélisation)
+> **Version 2.0** - Avec threading des conversations (1 ticket par conversation)
 
 ## Types de demandes
 
@@ -11,16 +12,61 @@
 
 ---
 
+## Threading des conversations
+
+**Principe** : 1 ticket par conversation, pas 1 ticket par email.
+
+| Scenario | Action |
+|----------|--------|
+| Premier email | Créer nouveau ticket |
+| Email de suivi (ticket ouvert < 14j) | Ajouter au ticket existant |
+| Email après 14j d'inactivité | Créer nouveau ticket |
+| Email après fermeture ticket | Créer nouveau ticket |
+
+**Statuts "ticket ouvert"** : Nouveau (1) ou En cours (2)
+
+**Propriétés custom HubSpot** (créées automatiquement) :
+- `clickup_subtask_id` : ID de la subtask ClickUp associée
+- `fichiers_urls` : URLs des fichiers R2 (concaténées)
+
+---
+
 ## Scripts disponibles
 
-| Script | Fonction | Usage |
-|--------|----------|-------|
-| `classify_request.py` | Classification SUPPORT/MODELISATION | Règles + LLM (Haiku) |
-| `upload_files.py` | Upload fichiers vers R2 | Retourne URLs publiques |
-| `hubspot_ticket.py` | Contact + Ticket + Note | `find_or_create_contact()`, `create_ticket()`, `create_note()` |
-| `clickup_subtask.py` | Subtask avec description + URLs | `create_subtask()` |
-| `send_notification.py` | Email admin | ⚠️ SMTP non configuré |
-| `test_request_handler.py` | Tests workflow | `--live --payload modelisation_with_files` |
+| Script | Fonction | Fonctions clés |
+|--------|----------|----------------|
+| `webhook_server.py` | Endpoint + traitement synchrone | `POST /webhook/request` |
+| `classify_request.py` | Classification SUPPORT/MODELISATION | `classify_request()` |
+| `upload_files.py` | Upload fichiers vers R2 | `upload_files()` |
+| `hubspot_ticket.py` | Gestion contacts, tickets, notes | `find_or_create_contact()`, `find_open_ticket()`, `create_ticket()`, `create_note()`, `append_fichiers_urls()` |
+| `clickup_subtask.py` | Gestion subtasks ClickUp | `create_subtask()`, `update_subtask_description()` |
+| `send_notification.py` | Email admin | `send_notification()` |
+
+---
+
+## Flux complet (webhook_server.py)
+
+```
+1. Recevoir payload (source, objet, description, user_email, fichiers)
+2. Classifier la demande (règles + LLM si ambigu)
+3. Upload fichiers vers R2 (si présents)
+4. Trouver/créer contact HubSpot
+5. Chercher ticket ouvert pour ce contact (< 14 jours)
+
+   SI ticket ouvert trouvé:
+   ├── Ajouter Note au ticket
+   ├── Concaténer fichiers_urls
+   ├── Mettre à jour subtask ClickUp (si existe)
+   └── Notifier admin
+
+   SINON:
+   ├── Créer nouveau ticket
+   ├── Stocker fichiers_urls
+   ├── Créer subtask ClickUp (si MODELISATION)
+   ├── Stocker clickup_subtask_id dans ticket
+   ├── Créer Note sur contact (si fichiers)
+   └── Notifier admin
+```
 
 ---
 
@@ -47,41 +93,12 @@ R2_BUCKET_NAME=figurative-support
 R2_ENDPOINT_URL=https://c46afcbabb4183669d66739ce638dd2e.r2.cloudflarestorage.com
 R2_PUBLIC_URL=https://pub-44fb87ee985849b6b4a6899988df6140.r2.dev
 
-# Notification
+# Notification SMTP (Outlook)
+SMTP_HOST=smtp.office365.com
+SMTP_PORT=587
+SMTP_USER=...
+SMTP_PASSWORD=...
 NOTIFICATION_EMAIL=yvanol.fotso@valione-services.com
-```
-
----
-
-## Flux MODELISATION (7 étapes)
-
-```
-1. Classification → MODELISATION (fichiers 3D = 95% confiance)
-2. Upload R2 → URLs publiques permanentes
-3. Contact HubSpot → find_or_create par email
-4. Ticket HubSpot → Pipeline 0, Stage 1, contenu + URLs
-5. Note HubSpot → Liens cliquables sur fiche contact
-6. ClickUp Subtask → Description complète + URLs fichiers
-7. Notification → Email admin (SMTP requis)
-```
-
----
-
-## Contenu ClickUp Subtask
-
-```markdown
-**Demande de modélisation**
-
-**Client**: user@example.com
-**Objet**: Titre de la demande
-**Ticket HubSpot**: https://app.hubspot.com/.../ticket/123
-
-## Description de la demande
-[Contenu original du mail]
-
-## Fichiers joints
-- [photo.jpg](https://pub-xxx.r2.dev/.../photo.jpg)
-- [model.glb](https://pub-xxx.r2.dev/.../model.glb)
 ```
 
 ---
@@ -100,8 +117,42 @@ uvicorn execution.webhook_server:app --host 0.0.0.0 --port 5000
 
 ---
 
+## Endpoint webhook
+
+**POST** `/webhook/request`
+
+```json
+{
+  "source": "modelisation",
+  "objet": "Demande de modélisation",
+  "description": "Je souhaite modéliser ce produit...",
+  "user_email": "client@example.com",
+  "user_name": "Jean Dupont",
+  "fichiers": [
+    {"name": "photo.jpg", "url": "https://temp-url.com/photo.jpg"}
+  ]
+}
+```
+
+**Réponse** :
+```json
+{
+  "status": "created",
+  "ticket_id": "12345",
+  "ticket_url": "https://app.hubspot.com/contacts/.../ticket/12345",
+  "is_new_ticket": true,
+  "classification": "MODELISATION",
+  "files_uploaded": 1,
+  "message": "Nouveau ticket créé: #12345"
+}
+```
+
+---
+
 ## Prochaines étapes
 
-- [ ] Configurer SMTP pour notifications
+- [x] Threading des conversations (1 ticket par sujet)
+- [x] Concaténation des fichiers (HubSpot + ClickUp)
+- [ ] Configurer SMTP Outlook pour notifications
 - [ ] Déployer webhook en daemon (systemd)
 - [ ] Connecter formulaires Figurative au webhook

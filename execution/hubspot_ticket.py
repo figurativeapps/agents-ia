@@ -1,26 +1,32 @@
 """
 HubSpot Help Desk Ticket Management
 Creates tickets, notes, and manages contact associations.
+Supports conversation threading (1 ticket per conversation).
 
 Usage:
     python hubspot_ticket.py --action find_or_create_contact --email "user@example.com" --name "John Doe"
     python hubspot_ticket.py --action create_ticket --contact-id 123 --objet "Title" --description "Content" --type SUPPORT
     python hubspot_ticket.py --action create_note --contact-id 123 --objet "Fichiers reçus" --fichiers-urls '["https://..."]'
+    python hubspot_ticket.py --action find_open_ticket --contact-id 123
+    python hubspot_ticket.py --action ensure_properties
 """
 
 import os
 import sys
 import json
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from hubspot import HubSpot
 from hubspot.crm.contacts import SimplePublicObjectInputForCreate as ContactInput
 from hubspot.crm.tickets import SimplePublicObjectInputForCreate as TicketInput
+from hubspot.crm.tickets import SimplePublicObjectInput as TicketUpdateInput
 from hubspot.crm.tickets import ApiException as TicketApiException
 from hubspot.crm.contacts import ApiException as ContactApiException
 from hubspot.crm.objects.notes import SimplePublicObjectInputForCreate as NoteInput
 from hubspot.crm.objects.notes import ApiException as NoteApiException
+from hubspot.crm.properties import PropertyCreate
+from hubspot.crm.properties import ApiException as PropertyApiException
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 # Fix Windows console encoding
@@ -46,6 +52,261 @@ def get_hubspot_client():
         raise ValueError("HUBSPOT_API_KEY not found in .env")
     return HubSpot(access_token=HUBSPOT_API_KEY)
 
+
+# =============================================================================
+# CUSTOM PROPERTIES MANAGEMENT
+# =============================================================================
+
+def ensure_custom_properties() -> dict:
+    """
+    Create custom ticket properties if they don't exist.
+    Called once at startup to ensure properties are available.
+    
+    Creates:
+        - clickup_subtask_id: Stores the ClickUp subtask ID for conversation threading
+        - fichiers_urls: Stores concatenated R2 file URLs (one per line)
+    
+    Returns:
+        {"success": bool, "properties": list of created/existing properties}
+    """
+    client = get_hubspot_client()
+    properties_to_create = [
+        {
+            "name": "clickup_subtask_id",
+            "label": "ClickUp Subtask ID",
+            "type": "string",
+            "field_type": "text",
+            "group_name": "ticketinformation",
+            "description": "ID de la subtask ClickUp associée à ce ticket"
+        },
+        {
+            "name": "fichiers_urls",
+            "label": "Fichiers URLs",
+            "type": "string",
+            "field_type": "textarea",
+            "group_name": "ticketinformation",
+            "description": "URLs des fichiers uploadés sur R2 (une par ligne)"
+        }
+    ]
+    
+    results = []
+    for prop in properties_to_create:
+        try:
+            # Try to create the property
+            property_create = PropertyCreate(
+                name=prop["name"],
+                label=prop["label"],
+                type=prop["type"],
+                field_type=prop["field_type"],
+                group_name=prop["group_name"],
+                description=prop["description"]
+            )
+            client.crm.properties.core_api.create(
+                object_type="tickets",
+                property_create=property_create
+            )
+            print(f"✅ Created property: {prop['name']}")
+            results.append({"name": prop["name"], "status": "created"})
+            
+        except PropertyApiException as e:
+            if "PROPERTY_EXISTS" in str(e) or "already exists" in str(e).lower():
+                print(f"ℹ️  Property already exists: {prop['name']}")
+                results.append({"name": prop["name"], "status": "exists"})
+            else:
+                print(f"⚠️  Error creating property {prop['name']}: {str(e)[:100]}")
+                results.append({"name": prop["name"], "status": "error", "error": str(e)[:100]})
+    
+    return {"success": True, "properties": results}
+
+
+# =============================================================================
+# TICKET THREADING - FIND OPEN TICKET
+# =============================================================================
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def find_open_ticket(contact_id: str, max_age_days: int = 14) -> dict | None:
+    """
+    Find an open ticket for a contact that was active within the last N days.
+    
+    An "open" ticket has status:
+        - "1" (Nouveau / New)
+        - "2" (En cours / In Progress)
+    
+    Args:
+        contact_id: HubSpot contact ID
+        max_age_days: Maximum days since last update (default 14)
+    
+    Returns:
+        {
+            "ticket_id": str,
+            "ticket_url": str,
+            "clickup_subtask_id": str | None,
+            "fichiers_urls": list[str]
+        } or None if no open ticket found
+    """
+    client = get_hubspot_client()
+    hub_id = HUBSPOT_HUB_ID
+    
+    # Calculate the cutoff date
+    cutoff_date = datetime.now() - timedelta(days=max_age_days)
+    cutoff_timestamp = int(cutoff_date.timestamp() * 1000)  # HubSpot uses milliseconds
+    
+    try:
+        # Get tickets associated with this contact
+        # First, get all ticket associations for the contact
+        associations = client.crm.associations.v4.basic_api.get_page(
+            object_type="contacts",
+            object_id=contact_id,
+            to_object_type="tickets",
+            limit=100
+        )
+        
+        if not associations.results:
+            print(f"ℹ️  No tickets found for contact {contact_id}")
+            return None
+        
+        # Get ticket IDs
+        ticket_ids = [assoc.to_object_id for assoc in associations.results]
+        
+        # Fetch ticket details with our custom properties
+        open_tickets = []
+        for ticket_id in ticket_ids:
+            try:
+                ticket = client.crm.tickets.basic_api.get_by_id(
+                    ticket_id=ticket_id,
+                    properties=[
+                        "subject", "hs_pipeline_stage", "hs_lastmodifieddate",
+                        "clickup_subtask_id", "fichiers_urls"
+                    ]
+                )
+                
+                props = ticket.properties
+                stage = props.get("hs_pipeline_stage", "")
+                last_modified = props.get("hs_lastmodifieddate", "")
+                
+                # Check if ticket is open (stage 1 or 2)
+                if stage in ["1", "2"]:
+                    # Check if ticket was modified within max_age_days
+                    if last_modified:
+                        try:
+                            modified_dt = datetime.fromisoformat(last_modified.replace("Z", "+00:00"))
+                            if modified_dt.timestamp() * 1000 >= cutoff_timestamp:
+                                # Parse fichiers_urls (stored as newline-separated string)
+                                fichiers_urls_str = props.get("fichiers_urls") or ""
+                                fichiers_urls = [u.strip() for u in fichiers_urls_str.split("\n") if u.strip()]
+                                
+                                open_tickets.append({
+                                    "ticket_id": ticket_id,
+                                    "ticket_url": f"https://app.hubspot.com/contacts/{hub_id}/ticket/{ticket_id}",
+                                    "subject": props.get("subject", ""),
+                                    "last_modified": last_modified,
+                                    "clickup_subtask_id": props.get("clickup_subtask_id"),
+                                    "fichiers_urls": fichiers_urls
+                                })
+                        except (ValueError, TypeError):
+                            # If date parsing fails, still consider the ticket if open
+                            fichiers_urls_str = props.get("fichiers_urls") or ""
+                            fichiers_urls = [u.strip() for u in fichiers_urls_str.split("\n") if u.strip()]
+                            
+                            open_tickets.append({
+                                "ticket_id": ticket_id,
+                                "ticket_url": f"https://app.hubspot.com/contacts/{hub_id}/ticket/{ticket_id}",
+                                "subject": props.get("subject", ""),
+                                "last_modified": last_modified,
+                                "clickup_subtask_id": props.get("clickup_subtask_id"),
+                                "fichiers_urls": fichiers_urls
+                            })
+                            
+            except Exception as e:
+                print(f"⚠️  Error fetching ticket {ticket_id}: {str(e)[:100]}")
+                continue
+        
+        if open_tickets:
+            # Return the most recently modified open ticket
+            open_tickets.sort(key=lambda x: x.get("last_modified", ""), reverse=True)
+            best_ticket = open_tickets[0]
+            print(f"✅ Found open ticket: {best_ticket['ticket_id']} ({best_ticket['subject']})")
+            return best_ticket
+        
+        print(f"ℹ️  No open tickets within {max_age_days} days for contact {contact_id}")
+        return None
+        
+    except Exception as e:
+        print(f"⚠️  Error searching for open tickets: {str(e)[:200]}")
+        return None
+
+
+# =============================================================================
+# TICKET UPDATE FUNCTIONS
+# =============================================================================
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def update_ticket_property(ticket_id: str, property_name: str, value: str) -> dict:
+    """
+    Update a single property on a ticket.
+    
+    Args:
+        ticket_id: HubSpot ticket ID
+        property_name: Property internal name (e.g., "clickup_subtask_id")
+        value: New value for the property
+    
+    Returns:
+        {"success": bool, "ticket_id": str}
+    """
+    client = get_hubspot_client()
+    
+    try:
+        update_input = TicketUpdateInput(
+            properties={property_name: value}
+        )
+        client.crm.tickets.basic_api.update(
+            ticket_id=ticket_id,
+            simple_public_object_input=update_input
+        )
+        print(f"✅ Updated ticket {ticket_id}: {property_name}")
+        return {"success": True, "ticket_id": ticket_id}
+        
+    except TicketApiException as e:
+        print(f"❌ Error updating ticket: {str(e)[:200]}")
+        return {"success": False, "ticket_id": ticket_id, "error": str(e)}
+
+
+def append_fichiers_urls(ticket_id: str, new_urls: list, existing_urls: list = None) -> dict:
+    """
+    Append new file URLs to the ticket's fichiers_urls property.
+    
+    Args:
+        ticket_id: HubSpot ticket ID
+        new_urls: List of new R2 URLs to add
+        existing_urls: Existing URLs (if already fetched, to avoid extra API call)
+    
+    Returns:
+        {"success": bool, "total_urls": int, "all_urls": list}
+    """
+    if not new_urls:
+        return {"success": True, "total_urls": len(existing_urls or []), "all_urls": existing_urls or []}
+    
+    # Combine existing and new URLs
+    all_urls = list(existing_urls or [])
+    for url in new_urls:
+        if url not in all_urls:
+            all_urls.append(url)
+    
+    # Store as newline-separated string
+    urls_string = "\n".join(all_urls)
+    
+    result = update_ticket_property(ticket_id, "fichiers_urls", urls_string)
+    
+    if result["success"]:
+        print(f"📎 Updated fichiers_urls: {len(all_urls)} total files")
+        return {"success": True, "total_urls": len(all_urls), "all_urls": all_urls}
+    else:
+        return {"success": False, "error": result.get("error"), "all_urls": all_urls}
+
+
+# =============================================================================
+# CONTACT FUNCTIONS
+# =============================================================================
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def search_contact_by_email(client, email: str) -> str | None:
@@ -255,10 +516,10 @@ def create_note(
     
     note_body += f"<br><em>Reçu le {datetime.now().strftime('%d/%m/%Y à %H:%M')}</em>"
     
-    # Note properties
+    # Note properties (hs_timestamp must be Unix timestamp in milliseconds)
     properties = {
         "hs_note_body": note_body,
-        "hs_timestamp": datetime.now().isoformat()
+        "hs_timestamp": str(int(datetime.now().timestamp() * 1000))
     }
     
     try:
@@ -325,7 +586,11 @@ def create_note(
 def main():
     parser = argparse.ArgumentParser(description="HubSpot Ticket Management")
     parser.add_argument("--action", required=True, 
-                        choices=["find_or_create_contact", "create_ticket", "create_note"],
+                        choices=[
+                            "find_or_create_contact", "create_ticket", "create_note",
+                            "find_open_ticket", "update_property", "append_urls",
+                            "ensure_properties"
+                        ],
                         help="Action to perform")
     
     # Contact arguments
@@ -340,17 +605,35 @@ def main():
     parser.add_argument("--source", help="Form source")
     parser.add_argument("--reclassifie", action="store_true", help="Was reclassified")
     parser.add_argument("--fichiers-urls", help="JSON array of file URLs")
-    parser.add_argument("--ticket-id", help="Ticket ID (for note association)")
+    parser.add_argument("--ticket-id", help="Ticket ID (for note association or update)")
+    parser.add_argument("--max-age-days", type=int, default=14, help="Max days for open ticket search")
+    
+    # Property update arguments
+    parser.add_argument("--property-name", help="Property name to update")
+    parser.add_argument("--property-value", help="Property value")
     
     parser.add_argument("--output", help="Output JSON file path")
     
     args = parser.parse_args()
     
-    if args.action == "find_or_create_contact":
+    if args.action == "ensure_properties":
+        result = ensure_custom_properties()
+    
+    elif args.action == "find_or_create_contact":
         if not args.email:
             print("❌ --email is required for find_or_create_contact")
             sys.exit(1)
         result = find_or_create_contact(args.email, args.name)
+    
+    elif args.action == "find_open_ticket":
+        if not args.contact_id:
+            print("❌ --contact-id is required for find_open_ticket")
+            sys.exit(1)
+        result = find_open_ticket(args.contact_id, args.max_age_days)
+        if result is None:
+            result = {"found": False, "message": "No open ticket found"}
+        else:
+            result["found"] = True
         
     elif args.action == "create_ticket":
         if not args.contact_id or not args.objet:
@@ -383,6 +666,19 @@ def main():
             ticket_id=args.ticket_id,
             type_demande=args.type or "MODELISATION"
         )
+    
+    elif args.action == "update_property":
+        if not args.ticket_id or not args.property_name or not args.property_value:
+            print("❌ --ticket-id, --property-name, and --property-value are required")
+            sys.exit(1)
+        result = update_ticket_property(args.ticket_id, args.property_name, args.property_value)
+    
+    elif args.action == "append_urls":
+        if not args.ticket_id or not args.fichiers_urls:
+            print("❌ --ticket-id and --fichiers-urls are required for append_urls")
+            sys.exit(1)
+        fichiers_urls = json.loads(args.fichiers_urls)
+        result = append_fichiers_urls(args.ticket_id, fichiers_urls)
     
     print(json.dumps(result, indent=2, ensure_ascii=False))
     

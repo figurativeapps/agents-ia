@@ -53,6 +53,76 @@ TEST_PAYLOADS = {
         "user_email": "confused@example.com",
         "user_name": "Pierre Durand",
         "fichiers": []
+    },
+    # Nouveau payload réaliste pour test de modélisation
+    "modelisation_realiste": {
+        "source": "modelisation",
+        "objet": "Modélisation 3D lampe de bureau design scandinave",
+        "description": """Bonjour,
+
+Je suis designer d'intérieur et je travaille actuellement sur un projet d'aménagement pour un client corporate.
+
+J'aurais besoin de faire modéliser une lampe de bureau design scandinave que j'ai sélectionnée pour ce projet. Le client souhaite pouvoir visualiser cette lampe en réalité augmentée directement dans ses bureaux avant de passer commande.
+
+Je vous joins :
+1. Une photo haute résolution de la lampe (vue de face)
+2. Les dimensions techniques au format PDF
+
+Dimensions approximatives :
+- Hauteur totale : 45 cm
+- Diamètre abat-jour : 25 cm
+- Base : 15 cm de diamètre
+
+Matériaux : 
+- Pied en laiton brossé
+- Abat-jour en tissu lin beige
+
+Merci de me confirmer la faisabilité et le délai estimé.
+
+Cordialement,
+Sophie Lemaire
+Studio Intérieurs & Espaces""",
+        "user_email": "sophie.lemaire@studioie.fr",
+        "user_name": "Sophie Lemaire",
+        "fichiers": [
+            {
+                "name": "lampe_scandinave_HD.jpg",
+                "url": "https://images.unsplash.com/photo-1507473885765-e6ed057f782c?w=800",
+                "type": "image/jpeg",
+                "size": 245000
+            },
+            {
+                "name": "dimensions_techniques.pdf",
+                "url": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+                "type": "application/pdf",
+                "size": 13264
+            }
+        ]
+    },
+    # Payload pour tester le threading (réponse à un ticket existant)
+    "modelisation_followup": {
+        "source": "modelisation",
+        "objet": "RE: Modélisation 3D lampe de bureau design scandinave",
+        "description": """Bonjour,
+
+Suite à notre échange, voici les informations complémentaires demandées :
+
+- Le fil électrique est de couleur noire tressée
+- L'interrupteur est intégré sur le fil à 30cm de la base
+- J'ai ajouté une photo supplémentaire montrant le détail du pied
+
+Merci !
+Sophie""",
+        "user_email": "sophie.lemaire@studioie.fr",
+        "user_name": "Sophie Lemaire",
+        "fichiers": [
+            {
+                "name": "detail_pied_lampe.jpg",
+                "url": "https://images.unsplash.com/photo-1513506003901-1e6a229e2d15?w=800",
+                "type": "image/jpeg",
+                "size": 180000
+            }
+        ]
     }
 }
 

@@ -105,17 +105,20 @@ def upload_to_r2(local_path: Path, remote_key: str) -> str | None:
             R2_BUCKET_NAME,
             remote_key,
             ExtraArgs={
-                'ContentType': content_type,
-                'ACL': 'public-read'
+                'ContentType': content_type
             }
         )
         
-        # Build public URL using the public R2.dev URL
+        # Build URL
         if R2_PUBLIC_URL:
+            # Use configured public URL (requires public bucket access)
             public_url = f"{R2_PUBLIC_URL.rstrip('/')}/{remote_key}"
         else:
-            # Fallback to constructed URL (may not work without public access)
-            public_url = f"{R2_ENDPOINT_URL.replace('r2.cloudflarestorage.com', 'r2.dev')}/{R2_BUCKET_NAME}/{remote_key}"
+            # Use R2.dev public URL format (requires public bucket access in Cloudflare)
+            # Extract account ID from endpoint URL
+            # Format: https://ACCOUNT_ID.r2.cloudflarestorage.com -> https://pub-ACCOUNT_ID.r2.dev
+            account_id = R2_ENDPOINT_URL.split('//')[1].split('.')[0]
+            public_url = f"https://pub-{account_id}.r2.dev/{remote_key}"
         
         return public_url
         

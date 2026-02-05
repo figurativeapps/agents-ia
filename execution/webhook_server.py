@@ -1,21 +1,76 @@
 """
-Webhook Server - Reçoit les demandes des formulaires Figurative
-et les ajoute à la queue Redis pour traitement par l'agent DOE.
+Webhook Server - Traitement synchrone des demandes Figurative
+Reçoit les demandes des formulaires et les traite immédiatement.
+Supporte le threading des conversations (1 ticket par conversation).
+
+Endpoints:
+    POST /webhook/request  - Traiter une demande client
+    GET  /health           - Vérifier l'état du serveur
 """
 
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
-from typing import Optional, List
+import os
+import sys
+from pathlib import Path
+
+# Add execution directory to path for imports BEFORE other imports
+execution_dir = Path(__file__).parent
+if str(execution_dir) not in sys.path:
+    sys.path.insert(0, str(execution_dir))
+
 import json
-import uuid
+import traceback
 from datetime import datetime
-import redis
+from typing import Optional, List
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import logging
 
+# Fix Windows console encoding
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
+
+# Import local modules (execution dir is in path)
+from classify_request import classify_request
+from upload_files import upload_files
+from hubspot_ticket import (
+    find_or_create_contact,
+    find_open_ticket,
+    create_ticket,
+    create_note,
+    update_ticket_property,
+    append_fichiers_urls,
+    ensure_custom_properties
+)
+from clickup_subtask import create_subtask, update_subtask_description
+
+# Notification module disabled by default
+# The client email already serves as notification via HubSpot Conversations
+# Enable only if you need to notify someone other than the email recipient
+NOTIFICATIONS_ENABLED = False
+try:
+    from send_notification import send_notification
+except ImportError:
+    pass
+
+# Try to import email-ticket association module (experimental feature)
+try:
+    from associate_email_ticket import find_and_associate
+    EMAIL_ASSOCIATION_ENABLED = True
+except ImportError:
+    EMAIL_ASSOCIATION_ENABLED = False
+
+
 # Configuration
-app = FastAPI(title="Figurative Request Handler")
-redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-QUEUE_NAME = "request_queue"
+app = FastAPI(
+    title="Figurative Request Handler",
+    description="Traitement automatisé des demandes support et modélisation",
+    version="2.1.0"
+)
 
 # Logging
 logging.basicConfig(
@@ -24,72 +79,364 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Modèles de données
+
+# =============================================================================
+# PYDANTIC MODELS
+# =============================================================================
+
 class FileAttachment(BaseModel):
     name: str
     url: Optional[str] = None
     size: Optional[int] = None
     type: Optional[str] = None
 
+
 class RequestPayload(BaseModel):
-    source: str
+    source: str  # "contact" or "modelisation"
     objet: str
     description: str
     user_email: str
     user_name: Optional[str] = None
     fichiers: Optional[List[FileAttachment]] = []
 
-@app.post("/webhook/request")
+
+class ProcessingResult(BaseModel):
+    status: str  # "created", "updated", "error"
+    ticket_id: Optional[str] = None
+    ticket_url: Optional[str] = None
+    is_new_ticket: bool = True
+    classification: Optional[str] = None
+    files_uploaded: int = 0
+    message: str = ""
+
+
+# =============================================================================
+# STARTUP EVENT
+# =============================================================================
+
+@app.on_event("startup")
+async def startup_event():
+    """Ensure HubSpot custom properties exist on startup."""
+    logger.info("🚀 Starting Figurative Request Handler v2.0")
+    try:
+        result = ensure_custom_properties()
+        logger.info(f"✅ HubSpot properties checked: {result['properties']}")
+    except Exception as e:
+        logger.warning(f"⚠️  Could not verify HubSpot properties: {e}")
+
+
+# =============================================================================
+# MAIN WEBHOOK ENDPOINT
+# =============================================================================
+
+@app.post("/webhook/request", response_model=ProcessingResult)
 async def receive_request(payload: RequestPayload):
-    task_id = str(uuid.uuid4())
-    task = {
-        "id": task_id,
-        "timestamp": datetime.now().isoformat(),
-        "status": "pending",
-        "payload": payload.dict()
-    }
+    """
+    Process incoming request with conversation threading.
     
-    redis_client.rpush(QUEUE_NAME, json.dumps(task))
-    logger.info(f"Task {task_id} added - Source: {payload.source} - Email: {payload.user_email}")
+    Flow:
+    1. Classify request (SUPPORT/MODELISATION)
+    2. Upload files to R2 (if any)
+    3. Find or create contact
+    4. Check for existing open ticket
+    5a. If open ticket exists: add note, update subtask
+    5b. If no open ticket: create ticket, create subtask (if MODELISATION)
+    6. Send notification
+    """
+    logger.info(f"📨 Received request from {payload.user_email} - Source: {payload.source}")
     
-    return {
-        "status": "received",
-        "task_id": task_id,
-        "message": "Votre demande a été enregistrée."
-    }
+    try:
+        # =================================================================
+        # STEP 1: Classify the request
+        # =================================================================
+        logger.info("🔍 Step 1: Classifying request...")
+        
+        fichiers_list = [f.dict() for f in payload.fichiers] if payload.fichiers else []
+        
+        classification = classify_request(
+            objet=payload.objet,
+            description=payload.description,
+            fichiers=fichiers_list,
+            source=payload.source
+        )
+        
+        type_final = classification["type_final"]
+        logger.info(f"✅ Classification: {type_final} (confidence: {classification['confiance']}%)")
+        
+        # =================================================================
+        # STEP 2: Upload files to R2 (if any)
+        # =================================================================
+        new_urls = []
+        if fichiers_list:
+            logger.info(f"📤 Step 2: Uploading {len(fichiers_list)} files to R2...")
+            
+            upload_result = upload_files(fichiers_list)
+            new_urls = [f["url"] for f in upload_result.get("uploaded", [])]
+            
+            if upload_result.get("failed"):
+                logger.warning(f"⚠️  Some files failed to upload: {upload_result['failed']}")
+            
+            logger.info(f"✅ Uploaded {len(new_urls)} files")
+        else:
+            logger.info("📭 Step 2: No files to upload")
+        
+        # =================================================================
+        # STEP 3: Find or create contact
+        # =================================================================
+        logger.info(f"👤 Step 3: Finding/creating contact for {payload.user_email}...")
+        
+        contact_result = find_or_create_contact(payload.user_email, payload.user_name)
+        contact_id = contact_result.get("contact_id")
+        
+        if not contact_id:
+            raise HTTPException(status_code=500, detail="Failed to find or create contact")
+        
+        logger.info(f"✅ Contact ID: {contact_id} (new: {contact_result.get('created', False)})")
+        
+        # =================================================================
+        # STEP 4: Check for existing open ticket
+        # =================================================================
+        logger.info(f"🔎 Step 4: Checking for open ticket...")
+        
+        open_ticket = find_open_ticket(contact_id, max_age_days=14)
+        
+        # =================================================================
+        # STEP 5: Process based on whether ticket exists
+        # =================================================================
+        
+        if open_ticket:
+            # ---------------------------------------------------------
+            # EXISTING TICKET - Add to conversation
+            # ---------------------------------------------------------
+            ticket_id = open_ticket["ticket_id"]
+            ticket_url = open_ticket["ticket_url"]
+            existing_urls = open_ticket.get("fichiers_urls", [])
+            subtask_id = open_ticket.get("clickup_subtask_id")
+            
+            logger.info(f"📝 Step 5a: Adding to existing ticket {ticket_id}")
+            
+            # Add note to ticket
+            if new_urls or payload.description:
+                note_result = create_note(
+                    contact_id=contact_id,
+                    objet=f"RE: {payload.objet}",
+                    fichiers_urls=new_urls,
+                    ticket_id=ticket_id,
+                    type_demande=type_final
+                )
+                logger.info(f"✅ Note added: {note_result.get('note_id')}")
+            
+            # Concatenate file URLs
+            if new_urls:
+                append_result = append_fichiers_urls(ticket_id, new_urls, existing_urls)
+                logger.info(f"📎 Files updated: {append_result.get('total_urls')} total")
+            
+            # Update ClickUp subtask if exists
+            if subtask_id:
+                logger.info(f"📋 Updating ClickUp subtask {subtask_id}...")
+                update_result = update_subtask_description(
+                    subtask_id=subtask_id,
+                    new_message=payload.description,
+                    new_fichiers_urls=new_urls
+                )
+                logger.info(f"✅ Subtask updated: {update_result.get('success')}")
+            
+            # Send notification
+            if NOTIFICATIONS_ENABLED:
+                try:
+                    send_notification(
+                        ticket_url=ticket_url,
+                        type_final=type_final,
+                        objet=f"[Réponse] {payload.objet}",
+                        user_email=payload.user_email,
+                        reclassifie=False
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️  Notification failed: {e}")
+            
+            return ProcessingResult(
+                status="updated",
+                ticket_id=ticket_id,
+                ticket_url=ticket_url,
+                is_new_ticket=False,
+                classification=type_final,
+                files_uploaded=len(new_urls),
+                message=f"Réponse ajoutée au ticket existant #{ticket_id}"
+            )
+        
+        else:
+            # ---------------------------------------------------------
+            # NEW TICKET - Create full workflow
+            # ---------------------------------------------------------
+            logger.info("🆕 Step 5b: Creating new ticket...")
+            
+            # Create ticket
+            ticket_result = create_ticket(
+                contact_id=contact_id,
+                type_final=type_final,
+                objet=payload.objet,
+                description=payload.description,
+                fichiers_urls=new_urls,
+                source_formulaire=payload.source,
+                reclassifie=classification.get("reclassifie", False)
+            )
+            
+            ticket_id = ticket_result.get("ticket_id")
+            ticket_url = ticket_result.get("ticket_url")
+            
+            if not ticket_id:
+                raise HTTPException(status_code=500, detail="Failed to create ticket")
+            
+            logger.info(f"✅ Ticket created: {ticket_id}")
+            
+            # Store fichiers_urls in custom property
+            if new_urls:
+                update_ticket_property(ticket_id, "fichiers_urls", "\n".join(new_urls))
+            
+            # Create ClickUp subtask if MODELISATION
+            subtask_id = None
+            if type_final == "MODELISATION":
+                logger.info("📋 Creating ClickUp subtask...")
+                
+                subtask_result = create_subtask(
+                    objet=payload.objet,
+                    user_email=payload.user_email,
+                    ticket_url=ticket_url,
+                    description=payload.description,
+                    fichiers_urls=new_urls
+                )
+                
+                subtask_id = subtask_result.get("subtask_id")
+                
+                if subtask_id:
+                    logger.info(f"✅ Subtask created: {subtask_id}")
+                    # Store subtask ID in ticket
+                    update_ticket_property(ticket_id, "clickup_subtask_id", subtask_id)
+                else:
+                    logger.warning(f"⚠️  Subtask creation failed: {subtask_result.get('error')}")
+            
+            # Create note on contact (for file history)
+            if new_urls:
+                create_note(
+                    contact_id=contact_id,
+                    objet=payload.objet,
+                    fichiers_urls=new_urls,
+                    ticket_id=ticket_id,
+                    type_demande=type_final
+                )
+            
+            # Send notification
+            if NOTIFICATIONS_ENABLED:
+                try:
+                    send_notification(
+                        ticket_url=ticket_url,
+                        type_final=type_final,
+                        objet=payload.objet,
+                        user_email=payload.user_email,
+                        reclassifie=classification.get("reclassifie", False)
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️  Notification failed: {e}")
+            
+            # Try to associate email conversation with ticket (experimental)
+            # This is non-blocking - if it fails, the ticket is still created
+            if EMAIL_ASSOCIATION_ENABLED:
+                try:
+                    logger.info("🔗 Attempting email-ticket association...")
+                    assoc_result = find_and_associate(payload.user_email, ticket_id)
+                    if assoc_result.get("success"):
+                        logger.info(f"✅ Email thread associated with ticket")
+                    else:
+                        logger.info(f"ℹ️  Email association skipped: {assoc_result.get('reason', 'unknown')}")
+                except Exception as e:
+                    logger.warning(f"⚠️  Email association failed (non-critical): {e}")
+            
+            return ProcessingResult(
+                status="created",
+                ticket_id=ticket_id,
+                ticket_url=ticket_url,
+                is_new_ticket=True,
+                classification=type_final,
+                files_uploaded=len(new_urls),
+                message=f"Nouveau ticket créé: #{ticket_id}"
+            )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Processing error: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+
+
+# =============================================================================
+# EMAIL ASSOCIATION ENDPOINT (Optional)
+# =============================================================================
+
+@app.post("/webhook/associate-email")
+async def associate_email_endpoint(contact_email: str, ticket_id: str):
+    """
+    Manually associate an email conversation with a ticket.
+    
+    This endpoint can be called after ticket creation to link
+    the HubSpot email conversation with the ticket, especially
+    if the automatic association failed due to timing issues.
+    
+    Args:
+        contact_email: Email of the contact
+        ticket_id: HubSpot ticket ID to associate
+        
+    Returns:
+        Association result
+    """
+    if not EMAIL_ASSOCIATION_ENABLED:
+        raise HTTPException(
+            status_code=501, 
+            detail="Email association feature not available"
+        )
+    
+    try:
+        result = find_and_associate(contact_email, ticket_id)
+        return result
+    except Exception as e:
+        logger.error(f"Email association error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# HEALTH CHECK
+# =============================================================================
 
 @app.get("/health")
 async def health_check():
-    try:
-        redis_client.ping()
-        redis_ok = True
-    except:
-        redis_ok = False
-    
-    queue_length = redis_client.llen(QUEUE_NAME) if redis_ok else -1
-    
-    return {
-        "status": "healthy" if redis_ok else "degraded",
-        "redis": "connected" if redis_ok else "disconnected",
-        "queue_length": queue_length,
-        "timestamp": datetime.now().isoformat()
+    """Check server health and dependencies."""
+    status = {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "version": "2.1.0",
+        "features": {
+            "classification": True,
+            "file_upload": True,
+            "hubspot": True,
+            "clickup": True,
+            "notifications": NOTIFICATIONS_ENABLED,
+            "conversation_threading": True,
+            "email_association": EMAIL_ASSOCIATION_ENABLED
+        }
     }
+    
+    return status
 
-@app.get("/queue/status")
-async def queue_status():
-    total = redis_client.llen(QUEUE_NAME)
-    tasks = []
-    for i in range(min(10, total)):
-        task_data = redis_client.lindex(QUEUE_NAME, i)
-        if task_data:
-            tasks.append(json.loads(task_data))
-    
-    return {
-        "total_pending": total,
-        "recent_tasks": tasks
-    }
+
+# =============================================================================
+# MAIN
+# =============================================================================
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=5000)
-EOF
+    
+    port = int(os.getenv("WEBHOOK_PORT", "5000"))
+    host = os.getenv("WEBHOOK_HOST", "0.0.0.0")
+    
+    logger.info(f"🚀 Starting webhook server on {host}:{port}")
+    uvicorn.run(app, host=host, port=port)

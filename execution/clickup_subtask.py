@@ -1,9 +1,12 @@
 """
-ClickUp Subtask Creation
-Creates subtasks under a parent task for tracking modeling requests.
+ClickUp Subtask Creation and Management
+Creates and updates subtasks under a parent task for tracking modeling requests.
+Supports conversation threading with description updates.
 
 Usage:
-    python clickup_subtask.py --objet "Request title" --email "user@example.com" --ticket-url "https://..." --description "Full request content" --fichiers-urls '["https://..."]'
+    python clickup_subtask.py --action create --objet "Request title" --email "user@example.com" --ticket-url "https://..." --description "Content" --fichiers-urls '["https://..."]'
+    python clickup_subtask.py --action get --subtask-id "abc123"
+    python clickup_subtask.py --action update --subtask-id "abc123" --new-message "Follow-up message" --new-fichiers-urls '["https://..."]'
 """
 
 import os
@@ -197,31 +200,216 @@ def create_subtask(
         }
 
 
+# =============================================================================
+# SUBTASK UPDATE FUNCTIONS (for conversation threading)
+# =============================================================================
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def get_subtask(subtask_id: str) -> dict | None:
+    """
+    Get details of a subtask including its current description.
+    
+    Args:
+        subtask_id: ClickUp task/subtask ID
+    
+    Returns:
+        {
+            "id": str,
+            "name": str,
+            "description": str,
+            "url": str
+        } or None if not found
+    """
+    url = f"{CLICKUP_API_BASE}/task/{subtask_id}"
+    
+    try:
+        response = requests.get(url, headers=get_headers(), timeout=30)
+        
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "id": data.get("id"),
+                "name": data.get("name"),
+                "description": data.get("description", ""),
+                "markdown_description": data.get("markdown_description", ""),
+                "url": data.get("url", f"https://app.clickup.com/t/{subtask_id}")
+            }
+        elif response.status_code == 404:
+            print(f"⚠️  Subtask not found: {subtask_id}")
+            return None
+        else:
+            print(f"⚠️  Error getting subtask: {response.status_code}")
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error getting subtask: {str(e)[:200]}")
+        return None
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def update_subtask_description(
+    subtask_id: str,
+    new_message: str,
+    new_fichiers_urls: list = None,
+    append_mode: bool = True
+) -> dict:
+    """
+    Update a subtask's description with new message and/or files.
+    
+    When append_mode=True (default), the new content is APPENDED to the existing
+    description, preserving the conversation history.
+    
+    Args:
+        subtask_id: ClickUp subtask ID
+        new_message: New message/description content to add
+        new_fichiers_urls: List of new R2 file URLs to add
+        append_mode: If True, append to existing description. If False, replace.
+    
+    Returns:
+        {"success": bool, "subtask_id": str}
+    """
+    from datetime import datetime
+    
+    # First, get the current description if we're appending
+    current_description = ""
+    if append_mode:
+        subtask = get_subtask(subtask_id)
+        if subtask:
+            current_description = subtask.get("markdown_description") or subtask.get("description") or ""
+    
+    # Build the new content to add
+    timestamp = datetime.now().strftime("%d/%m/%Y à %H:%M")
+    new_section = f"""
+
+---
+
+## Nouveau message ({timestamp})
+
+{new_message}
+"""
+    
+    # Add new files if provided
+    if new_fichiers_urls and len(new_fichiers_urls) > 0:
+        new_section += """
+### Nouveaux fichiers joints
+
+"""
+        for url in new_fichiers_urls:
+            filename = url.split("/")[-1] if "/" in url else url
+            new_section += f"- [{filename}]({url})\n"
+    
+    # Combine descriptions
+    if append_mode and current_description:
+        final_description = current_description + new_section
+    else:
+        final_description = new_section
+    
+    # Update the task
+    url = f"{CLICKUP_API_BASE}/task/{subtask_id}"
+    payload = {
+        "markdown_description": final_description
+    }
+    
+    try:
+        response = requests.put(
+            url,
+            headers=get_headers(),
+            json=payload,
+            timeout=30
+        )
+        
+        if response.status_code == 200:
+            print(f"✅ Updated subtask description: {subtask_id}")
+            return {
+                "success": True,
+                "subtask_id": subtask_id,
+                "files_added": len(new_fichiers_urls) if new_fichiers_urls else 0
+            }
+        else:
+            error_msg = response.text[:200]
+            print(f"❌ Error updating subtask: {response.status_code} - {error_msg}")
+            return {
+                "success": False,
+                "subtask_id": subtask_id,
+                "error": error_msg
+            }
+            
+    except Exception as e:
+        print(f"❌ Error updating subtask: {str(e)[:200]}")
+        return {
+            "success": False,
+            "subtask_id": subtask_id,
+            "error": str(e)
+        }
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Create ClickUp subtask")
-    parser.add_argument("--objet", required=True, help="Request title")
-    parser.add_argument("--email", required=True, help="User email")
-    parser.add_argument("--ticket-url", required=True, help="HubSpot ticket URL")
-    parser.add_argument("--description", help="Full request description/content")
+    parser = argparse.ArgumentParser(description="ClickUp Subtask Management")
+    parser.add_argument("--action", default="create", choices=["create", "get", "update"],
+                        help="Action to perform (default: create)")
+    
+    # Create action arguments
+    parser.add_argument("--objet", help="Request title (for create)")
+    parser.add_argument("--email", help="User email (for create)")
+    parser.add_argument("--ticket-url", help="HubSpot ticket URL (for create)")
+    parser.add_argument("--description", help="Full request description/content (for create)")
     parser.add_argument("--fichiers-urls", help="JSON array of file URLs")
-    parser.add_argument("--parent-id", help="Override parent task ID")
+    parser.add_argument("--parent-id", help="Override parent task ID (for create)")
+    
+    # Get/Update action arguments
+    parser.add_argument("--subtask-id", help="Subtask ID (for get/update)")
+    parser.add_argument("--new-message", help="New message to append (for update)")
+    parser.add_argument("--new-fichiers-urls", help="JSON array of new file URLs (for update)")
+    
     parser.add_argument("--output", help="Output JSON file path")
     
     args = parser.parse_args()
     
-    # Parse file URLs if provided
-    fichiers_urls = json.loads(args.fichiers_urls) if args.fichiers_urls else []
+    if args.action == "create":
+        if not args.objet or not args.email or not args.ticket_url:
+            print("❌ --objet, --email, and --ticket-url are required for create")
+            sys.exit(1)
+        
+        fichiers_urls = json.loads(args.fichiers_urls) if args.fichiers_urls else []
+        print(f"📋 Creating ClickUp subtask for: {args.email}")
+        
+        result = create_subtask(
+            objet=args.objet,
+            user_email=args.email,
+            ticket_url=args.ticket_url,
+            description=args.description,
+            fichiers_urls=fichiers_urls,
+            parent_task_id=args.parent_id
+        )
     
-    print(f"📋 Creating ClickUp subtask for: {args.email}")
+    elif args.action == "get":
+        if not args.subtask_id:
+            print("❌ --subtask-id is required for get")
+            sys.exit(1)
+        
+        print(f"🔍 Getting subtask: {args.subtask_id}")
+        result = get_subtask(args.subtask_id)
+        if result is None:
+            result = {"found": False, "error": "Subtask not found"}
+        else:
+            result["found"] = True
     
-    result = create_subtask(
-        objet=args.objet,
-        user_email=args.email,
-        ticket_url=args.ticket_url,
-        description=args.description,
-        fichiers_urls=fichiers_urls,
-        parent_task_id=args.parent_id
-    )
+    elif args.action == "update":
+        if not args.subtask_id:
+            print("❌ --subtask-id is required for update")
+            sys.exit(1)
+        if not args.new_message and not args.new_fichiers_urls:
+            print("❌ --new-message or --new-fichiers-urls is required for update")
+            sys.exit(1)
+        
+        new_fichiers_urls = json.loads(args.new_fichiers_urls) if args.new_fichiers_urls else []
+        print(f"📝 Updating subtask: {args.subtask_id}")
+        
+        result = update_subtask_description(
+            subtask_id=args.subtask_id,
+            new_message=args.new_message or "",
+            new_fichiers_urls=new_fichiers_urls
+        )
     
     print(json.dumps(result, indent=2, ensure_ascii=False))
     
