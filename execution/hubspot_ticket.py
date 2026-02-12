@@ -394,7 +394,8 @@ def create_ticket(
     description: str,
     fichiers_urls: list = None,
     source_formulaire: str = None,
-    reclassifie: bool = False
+    reclassifie: bool = False,
+    user_email: str = None
 ) -> dict:
     """Create a ticket in HubSpot Help Desk"""
     client = get_hubspot_client()
@@ -419,6 +420,8 @@ def create_ticket(
     # Add metadata to content instead of custom properties
     # (Custom properties would need to be created in HubSpot first)
     metadata = []
+    if user_email:
+        metadata.append(f"Email: {user_email}")
     if type_final:
         metadata.append(f"Type: {type_final}")
     if source_formulaire:

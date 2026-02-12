@@ -278,7 +278,8 @@ async def receive_request(payload: RequestPayload):
                 description=payload.description,
                 fichiers_urls=new_urls,
                 source_formulaire=payload.source,
-                reclassifie=classification.get("reclassifie", False)
+                reclassifie=classification.get("reclassifie", False),
+                user_email=payload.user_email  # Email du contact (identifiant plateforme)
             )
             
             ticket_id = ticket_result.get("ticket_id")

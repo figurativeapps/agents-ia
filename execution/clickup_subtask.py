@@ -30,6 +30,7 @@ load_dotenv()
 
 CLICKUP_API_KEY = os.getenv("CLICKUP_API_KEY")
 CLICKUP_PARENT_TASK_ID = os.getenv("CLICKUP_PARENT_TASK_ID", "86c7r48ha")
+CLICKUP_ASSIGNEE_ID = os.getenv("CLICKUP_ASSIGNEE_ID", "100557980")  # Yvanol Fotso by default
 CLICKUP_API_BASE = "https://api.clickup.com/api/v2"
 
 
@@ -135,7 +136,8 @@ def create_subtask(
         "markdown_description": task_description,  # Use markdown for better formatting
         "parent": parent_id,  # This makes it a subtask
         "status": "to do",
-        "priority": 3  # Normal priority
+        "priority": 3,  # Normal priority
+        "assignees": [int(CLICKUP_ASSIGNEE_ID)] if CLICKUP_ASSIGNEE_ID else []  # Assign to Yvanol
     }
     
     # Create task in the list (with parent = subtask)
