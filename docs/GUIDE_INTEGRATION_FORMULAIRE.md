@@ -32,8 +32,8 @@ Content-Type: application/json
   "source": "modelisation",
   "objet": "Titre de la demande",
   "description": "Contenu complet du message du client...",
-  "user_email": "client@example.com",
-  "user_name": "Prénom Nom",
+  "user_email": "marc.lefevre@societe.fr",
+  "user_name": "Marc Lefevre",
   "fichiers": [
     {
       "name": "photo.jpg",
@@ -58,14 +58,27 @@ Content-Type: application/json
 | `source` | string | `"contact"` ou `"modelisation"` selon le formulaire |
 | `objet` | string | Titre/sujet de la demande |
 | `description` | string | Contenu complet du message |
-| `user_email` | string | Email du client |
+| `user_email` | string | **Email de l'utilisateur connecté sur la plateforme Figurative** (identifiant du compte). Ex: `marc.lefevre@societe.fr` |
 
 ## Champs optionnels
 
 | Champ | Type | Description |
 |-------|------|-------------|
-| `user_name` | string | Nom complet du client |
+| `user_name` | string | Nom complet de l'utilisateur |
 | `fichiers` | array | Liste des pièces jointes |
+
+## Important : user_email
+
+Le champ `user_email` doit contenir **l'email utilisé par le client pour créer son compte sur la plateforme Figurative**.
+
+Cet email sert :
+- D'identifiant unique du client
+- À créer/retrouver le contact dans HubSpot
+- À nommer la subtask ClickUp ("Demande marc.lefevre@societe.fr")
+- À être affiché dans le ticket HubSpot
+
+**NE PAS utiliser** l'email générique de la plateforme (ex: `figurative824@gmail.com`).
+**UTILISER** l'email du compte utilisateur connecté (ex: `marc.lefevre@societe.fr`).
 
 ## Format des fichiers
 
@@ -121,14 +134,15 @@ Chaque fichier dans le tableau `fichiers` :
 
 ```javascript
 // Après validation du formulaire, avant ou après l'envoi de l'email
+// IMPORTANT: currentUser.email = email du compte utilisateur connecté sur la plateforme
 
-async function submitToWebhook(formData) {
+async function submitToWebhook(formData, currentUser) {
   const payload = {
     source: formData.formType, // "contact" ou "modelisation"
     objet: formData.subject,
     description: formData.message,
-    user_email: formData.email,
-    user_name: formData.name,
+    user_email: currentUser.email,  // Email du compte utilisateur (ex: marc.lefevre@societe.fr)
+    user_name: currentUser.name,    // Nom de l'utilisateur connecté
     fichiers: formData.attachments.map(file => ({
       name: file.name,
       url: file.temporaryUrl, // URL temporaire du fichier uploadé
@@ -163,13 +177,14 @@ async function submitToWebhook(formData) {
 
 ```php
 <?php
-function submitToWebhook($formData) {
+// IMPORTANT: $currentUser = utilisateur connecté sur la plateforme Figurative
+function submitToWebhook($formData, $currentUser) {
     $payload = [
         'source' => $formData['form_type'], // "contact" ou "modelisation"
         'objet' => $formData['subject'],
         'description' => $formData['message'],
-        'user_email' => $formData['email'],
-        'user_name' => $formData['name'],
+        'user_email' => $currentUser['email'],  // Email du compte (ex: marc.lefevre@societe.fr)
+        'user_name' => $currentUser['name'],    // Nom de l'utilisateur connecté
         'fichiers' => array_map(function($file) {
             return [
                 'name' => $file['name'],
