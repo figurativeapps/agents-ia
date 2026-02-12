@@ -1,7 +1,7 @@
 """
 Webhook Server - Traitement synchrone des demandes Figurative
 Reçoit les demandes des formulaires et les traite immédiatement.
-Supporte le threading des conversations (1 ticket par conversation).
+Chaque demande crée un nouveau ticket HubSpot et une nouvelle subtask ClickUp.
 
 Endpoints:
     POST /webhook/request  - Traiter une demande client
@@ -39,14 +39,12 @@ from classify_request import classify_request
 from upload_files import upload_files
 from hubspot_ticket import (
     find_or_create_contact,
-    find_open_ticket,
     create_ticket,
     create_note,
     update_ticket_property,
-    append_fichiers_urls,
     ensure_custom_properties
 )
-from clickup_subtask import create_subtask, update_subtask_description
+from clickup_subtask import create_subtask
 
 # Notification module disabled by default
 # The client email already serves as notification via HubSpot Conversations
@@ -69,7 +67,7 @@ except ImportError:
 app = FastAPI(
     title="Figurative Request Handler",
     description="Traitement automatisé des demandes support et modélisation",
-    version="2.1.0"
+    version="2.2.0"
 )
 
 # Logging
@@ -194,77 +192,12 @@ async def receive_request(payload: RequestPayload):
         logger.info(f"✅ Contact ID: {contact_id} (new: {contact_result.get('created', False)})")
         
         # =================================================================
-        # STEP 4: Check for existing open ticket
+        # STEP 4: Create new ticket (one ticket per request)
         # =================================================================
-        logger.info(f"🔎 Step 4: Checking for open ticket...")
+        # Note: Threading disabled - each request creates a new ticket
+        # This is simpler and avoids confusion when same user sends multiple requests
         
-        open_ticket = find_open_ticket(contact_id, max_age_days=14)
-        
-        # =================================================================
-        # STEP 5: Process based on whether ticket exists
-        # =================================================================
-        
-        if open_ticket:
-            # ---------------------------------------------------------
-            # EXISTING TICKET - Add to conversation
-            # ---------------------------------------------------------
-            ticket_id = open_ticket["ticket_id"]
-            ticket_url = open_ticket["ticket_url"]
-            existing_urls = open_ticket.get("fichiers_urls", [])
-            subtask_id = open_ticket.get("clickup_subtask_id")
-            
-            logger.info(f"📝 Step 5a: Adding to existing ticket {ticket_id}")
-            
-            # Add note to ticket
-            if new_urls or payload.description:
-                note_result = create_note(
-                    contact_id=contact_id,
-                    objet=f"RE: {payload.objet}",
-                    fichiers_urls=new_urls,
-                    ticket_id=ticket_id,
-                    type_demande=type_final
-                )
-                logger.info(f"✅ Note added: {note_result.get('note_id')}")
-            
-            # Concatenate file URLs
-            if new_urls:
-                append_result = append_fichiers_urls(ticket_id, new_urls, existing_urls)
-                logger.info(f"📎 Files updated: {append_result.get('total_urls')} total")
-            
-            # Update ClickUp subtask if exists
-            if subtask_id:
-                logger.info(f"📋 Updating ClickUp subtask {subtask_id}...")
-                update_result = update_subtask_description(
-                    subtask_id=subtask_id,
-                    new_message=payload.description,
-                    new_fichiers_urls=new_urls
-                )
-                logger.info(f"✅ Subtask updated: {update_result.get('success')}")
-            
-            # Send notification
-            if NOTIFICATIONS_ENABLED:
-                try:
-                    send_notification(
-                        ticket_url=ticket_url,
-                        type_final=type_final,
-                        objet=f"[Réponse] {payload.objet}",
-                        user_email=payload.user_email,
-                        reclassifie=False
-                    )
-                except Exception as e:
-                    logger.warning(f"⚠️  Notification failed: {e}")
-            
-            return ProcessingResult(
-                status="updated",
-                ticket_id=ticket_id,
-                ticket_url=ticket_url,
-                is_new_ticket=False,
-                classification=type_final,
-                files_uploaded=len(new_urls),
-                message=f"Réponse ajoutée au ticket existant #{ticket_id}"
-            )
-        
-        else:
+        if True:  # Always create new ticket
             # ---------------------------------------------------------
             # NEW TICKET - Create full workflow
             # ---------------------------------------------------------
@@ -414,16 +347,16 @@ async def health_check():
     status = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "version": "2.1.0",
+        "version": "2.2.0",
         "features": {
             "classification": True,
             "file_upload": True,
             "hubspot": True,
             "clickup": True,
             "notifications": NOTIFICATIONS_ENABLED,
-            "conversation_threading": True,
             "email_association": EMAIL_ASSOCIATION_ENABLED
-        }
+        },
+        "mode": "one_ticket_per_request"  # No threading - each request = new ticket
     }
     
     return status
