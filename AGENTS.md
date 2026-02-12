@@ -40,19 +40,34 @@ You operate within a 3-layer architecture (DOE Framework) to manage three distin
 
 **Directives:** `workflow_pdf_maker.md`
 
-### Mode C: Support Handler
+### Mode C: Support Handler (v3.0 - Credit Validation)
 
 | Script | Function | Input → Output |
 |--------|----------|----------------|
-| `webhook_server.py` | Receive requests (FastAPI) | HTTP → Redis queue |
+| `webhook_server.py` | Receive requests (FastAPI v3.0) | HTTP → Ticket + Validation |
 | `classify_request.py` | Classify SUPPORT/MODELISATION | Text → Type + Confidence |
+| `analyze_request.py` | Check completeness + estimate credits | Request → Credits + Missing info |
 | `upload_files.py` | Upload files to R2 | Files → Public URLs |
 | `hubspot_ticket.py` | Manage contacts, tickets, notes | Data → HubSpot objects |
+| `hubspot_conversation.py` | Read/send emails via HubSpot | Email ↔ HubSpot |
 | `clickup_subtask.py` | Create modeling subtask | Data → ClickUp task |
+| `validation_workflow.py` | Poll pending tickets, process responses | Tickets → Validation |
 | `send_notification.py` | Email admin notification | Data → SMTP |
-| `test_request_handler.py` | Test full workflow | Payload → Results |
 
-**Directives:** `workflow_request_handler.md`, `classify_request.md`, `create_hubspot_ticket.md`, `create_clickup_subtask.md`, `notify_admin.md`
+**Workflow MODELISATION (v3.0):**
+1. Webhook reçoit demande → Classification
+2. Ticket HubSpot créé (statut: pending)
+3. Analyse complétude + estimation crédits
+4. Si incomplet → Email demande d'infos (`pending_info`)
+5. Si complexe → Notification admin (`pending_admin`)
+6. Si complet → Devis envoyé au client (`pending_credits`)
+7. Client valide → Subtask ClickUp créée (`validated`)
+
+**Propriétés HubSpot:**
+- `validation_status`: pending_info | pending_credits | pending_admin | validated | rejected
+- `credits_estimes`: 1 ou 2
+
+**Directives:** `workflow_request_handler.md`, `grille_credits_modelisation.md`, `email_templates_validation.md`
 
 **Documentation:** `docs/PROCESSUS_SUPPORT.md`
 

@@ -86,21 +86,50 @@ def ensure_custom_properties() -> dict:
             "field_type": "textarea",
             "group_name": "ticketinformation",
             "description": "URLs des fichiers uploadés sur R2 (une par ligne)"
+        },
+        {
+            "name": "validation_status",
+            "label": "Statut Validation",
+            "type": "enumeration",
+            "field_type": "select",
+            "group_name": "ticketinformation",
+            "description": "Statut de validation de la demande de modélisation",
+            "options": [
+                {"label": "En attente d'infos", "value": "pending_info", "displayOrder": 1},
+                {"label": "Devis envoyé", "value": "pending_credits", "displayOrder": 2},
+                {"label": "Attente admin", "value": "pending_admin", "displayOrder": 3},
+                {"label": "Validé", "value": "validated", "displayOrder": 4},
+                {"label": "Refusé", "value": "rejected", "displayOrder": 5}
+            ]
+        },
+        {
+            "name": "credits_estimes",
+            "label": "Crédits Estimés",
+            "type": "number",
+            "field_type": "number",
+            "group_name": "ticketinformation",
+            "description": "Nombre de crédits estimés pour cette modélisation"
         }
     ]
     
     results = []
     for prop in properties_to_create:
         try:
-            # Try to create the property
-            property_create = PropertyCreate(
-                name=prop["name"],
-                label=prop["label"],
-                type=prop["type"],
-                field_type=prop["field_type"],
-                group_name=prop["group_name"],
-                description=prop["description"]
-            )
+            # Build property creation kwargs
+            create_kwargs = {
+                "name": prop["name"],
+                "label": prop["label"],
+                "type": prop["type"],
+                "field_type": prop["field_type"],
+                "group_name": prop["group_name"],
+                "description": prop["description"]
+            }
+            
+            # Add options for enumeration type
+            if prop.get("options"):
+                create_kwargs["options"] = prop["options"]
+            
+            property_create = PropertyCreate(**create_kwargs)
             client.crm.properties.core_api.create(
                 object_type="tickets",
                 property_create=property_create
