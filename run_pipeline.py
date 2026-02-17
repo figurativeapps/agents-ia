@@ -115,11 +115,11 @@ Examples:
         return
 
     # STEP 2: Qualify websites
-    qualify_cmd = f'python "{exec_dir}/2_qualify_site.py" --input "{project_root}/.tmp/google_maps_results.json"'
+    qualify_cmd = f'python "{exec_dir}/qualify_site.py" --input "{project_root}/.tmp/google_maps_results.json"'
     run_command("STEP 2: Qualifying Websites", qualify_cmd, critical=True)
 
     # STEP 3: Enrich contacts
-    enrich_cmd = f'python "{exec_dir}/5_enrich.py" --input "{project_root}/.tmp/qualified_leads.json"'
+    enrich_cmd = f'python "{exec_dir}/enrich.py" --input "{project_root}/.tmp/qualified_leads.json"'
     run_command("STEP 3: Enriching Contacts", enrich_cmd, critical=True)
 
     # STEP 4: Save to Excel
@@ -148,8 +148,8 @@ Examples:
         print(f"   - HubSpot CRM: Contacts synced")
     print(f"\n💡 Next steps:")
     print(f"   1. Open Generate_leads.xlsx to review leads")
-    print(f"   2. Generate PDFs: python execution/8_generate_pdf.py --company 'Company Name'")
-    print(f"   3. Launch email campaign using templates in directives/email_templates.md")
+    print(f"   2. Generate PDFs: python execution/generate_pdf.py --company 'Company Name'")
+    print(f"   3. Launch email campaign using cold outreach templates")
 
 
 if __name__ == '__main__':

@@ -3,7 +3,7 @@ PDF Generation Tool
 Creates customized proposal PDFs from Jinja2 templates.
 
 Usage:
-    python 8_generate_pdf.py --company "Acme Corp" --industry "Restaurants"
+    python generate_pdf.py --company "Acme Corp" --industry "Restaurants"
 """
 
 import argparse

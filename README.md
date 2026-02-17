@@ -10,18 +10,18 @@ DOE (Directive → Orchestration → Execution) is a three-layer architecture fo
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  LAYER 1: DIRECTIVES          (directives/*.md)             │
-│  → Business logic and standard operating procedures         │
+│  LAYER 1: SKILLS              (.claude/skills/*.md)          │
+│  → Specialized agent skills with full SOPs                   │
 ├─────────────────────────────────────────────────────────────┤
-│  LAYER 2: ORCHESTRATION       (AGENTS.md)                   │
-│  → AI agent that decides which workflow to execute          │
+│  LAYER 2: ORCHESTRATION       (CLAUDE.md)                    │
+│  → AI agent that decides which workflow to execute           │
 ├─────────────────────────────────────────────────────────────┤
-│  LAYER 3: EXECUTION           (execution/*.py)              │
-│  → Deterministic Python scripts that do the actual work     │
+│  LAYER 3: EXECUTION           (execution/*.py)               │
+│  → Deterministic Python scripts that do the actual work      │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Core Principle**: The AI agent reads directives (SOPs) and executes pre-built scripts. It doesn't write code on the fly.
+**Core Principle**: The AI agent reads skills (SOPs) and executes pre-built scripts. It doesn't write code on the fly.
 
 ---
 
@@ -29,7 +29,7 @@ DOE (Directive → Orchestration → Execution) is a three-layer architecture fo
 
 - **Multi-Agent**: Support for multiple independent workflows (Lead Gen, Document Creation, Request Handling)
 - **Self-Healing**: Agents can detect errors, fix scripts, and retry
-- **No-Code SOPs**: Business logic defined in markdown files
+- **No-Code SOPs**: Business logic defined in skill files
 - **Modular Scripts**: Reusable Python tools for common tasks
 - **API-First**: Integrates with HubSpot, ClickUp, cloud storage, and LLMs
 
@@ -39,33 +39,32 @@ DOE (Directive → Orchestration → Execution) is a three-layer architecture fo
 
 ```
 agents_ia/
-├── AGENTS.md              # Agent orchestration instructions
-├── directives/            # Business logic and workflows (SOPs)
-│   ├── workflow_*.md
-│   └── *.md
-├── execution/             # Python automation scripts
-│   ├── scrape_*.py
-│   ├── enrich_*.py
-│   └── *.py
-├── docs/                  # Documentation
-├── templates/             # Document templates
-├── .env                   # API keys (not versioned)
-└── Generate_leads.xlsx    # Master database
+├── CLAUDE.md                    # Project brain (auto-injected)
+├── .claude/skills/              # Specialized agent skills
+│   ├── hunter.md                # Mode A: Lead Generation
+│   ├── maker.md                 # Mode B: PDF Proposals
+│   └── handler.md               # Mode C: Support/Modélisation
+├── execution/                   # Deterministic Python scripts
+├── tests/                       # Test scripts
+├── docs/                        # Documentation
+├── templates/                   # Jinja2 templates for PDF
+├── output/                      # Generated PDFs
+├── .env                         # API keys (not versioned)
+├── run_pipeline.py              # Master pipeline (Mode A)
+└── Generate_leads.xlsx          # Master database
 ```
 
 ---
 
 ## Operating Modes
 
-The framework supports 3 distinct operating modes:
+| Mode | Name | Purpose | Example Use Case |
+|------|------|---------|------------------|
+| **A** | Hunter | Lead generation & enrichment | B2B lead scraping, CRM sync |
+| **B** | Maker | Document generation | PDF proposals, reports |
+| **C** | Handler | Request processing | Support tickets, 3D modeling requests |
 
-| Mode | Purpose | Example Use Case |
-|------|---------|------------------|
-| **Mode A** | Data collection and enrichment | B2B lead generation, web scraping |
-| **Mode B** | Document generation | PDF proposals, reports |
-| **Mode C** | Request processing | Support tickets, task automation |
-
-Each mode has its own set of directives and scripts.
+Each mode has its own skill file in `.claude/skills/`.
 
 ---
 
@@ -88,7 +87,15 @@ cp .env.template .env
 
 ### 3. Run a Workflow
 
-Check `AGENTS.md` for the complete script registry and usage instructions.
+```bash
+# Mode A: Lead Generation
+python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
+
+# Mode C: Webhook Server
+uvicorn execution.webhook_server:app --host 0.0.0.0 --port 5000
+```
+
+Check `CLAUDE.md` for the complete script registry.
 
 ---
 
@@ -97,8 +104,8 @@ Check `AGENTS.md` for the complete script registry and usage instructions.
 ### 1. User Request
 *"Find 50 B2B leads in Lyon"*
 
-### 2. Agent Reads Directives
-The AI agent loads `directives/workflow_*.md` based on the request type.
+### 2. Agent Loads Skill
+Claude Code reads `.claude/skills/hunter.md` based on the request type.
 
 ### 3. Agent Executes Scripts
 Runs the appropriate sequence from `execution/`:
@@ -108,35 +115,6 @@ scrape → qualify → enrich → save → sync
 
 ### 4. Results
 Data stored in Excel and synced to CRM.
-
----
-
-## Core Components
-
-### Directives (Layer 1)
-
-Markdown files defining:
-- Workflow steps
-- Business rules
-- API strategies
-- Email templates
-
-### Scripts (Layer 3)
-
-Python tools for:
-- Web scraping
-- Data enrichment
-- CRM synchronization
-- Document generation
-- API integrations
-
-### Orchestration (Layer 2)
-
-The AI agent (`AGENTS.md`) that:
-- Routes requests to the right workflow
-- Executes scripts in sequence
-- Handles errors and retries
-- Ensures data integrity
 
 ---
 
@@ -155,7 +133,6 @@ The AI agent (`AGENTS.md`) that:
 - Pandas (data manipulation)
 - Requests (API calls)
 - FastAPI (webhook server)
-- Redis (task queue)
 - WeasyPrint (PDF generation)
 
 See `requirements.txt` for full list.
@@ -164,15 +141,9 @@ See `requirements.txt` for full list.
 
 ## Documentation
 
-- `AGENTS.md` - Agent instructions and script registry
+- `CLAUDE.md` - Agent instructions and script registry
+- `.claude/skills/` - Skill files for each mode
 - `docs/QUICKSTART.md` - Getting started guide
-- `directives/` - Individual workflow documentation
-
----
-
-## License
-
-MIT License - Free to use and modify.
 
 ---
 

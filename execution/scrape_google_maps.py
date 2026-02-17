@@ -197,7 +197,7 @@ def main():
         output_path = save_to_json(leads)
         print(f"\n✅ Step 1 complete: {len(leads)} leads scraped")
         print(f"📄 Output: {output_path}")
-        print(f"\n➡️  Next step: Run qualification with 2_qualify_site.py")
+        print(f"\n➡️  Next step: Run qualification with qualify_site.py")
     else:
         print("❌ No leads found")
 

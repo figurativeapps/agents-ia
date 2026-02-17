@@ -1,0 +1,76 @@
+# Skill: Hunter — Lead Generation B2B
+
+## Quand utiliser cette skill
+L'utilisateur demande de trouver des leads, scraper des entreprises, enrichir des contacts, ou synchroniser avec HubSpot.
+
+**Mots-clés déclencheurs :** leads, scraper, enrichir, prospects, entreprises, HubSpot sync, Google Maps, industrie, ville
+
+---
+
+## Inputs requis
+- `industry` (ex: "Cuisinistes")
+- `location` (ex: "Bordeaux")
+- `max_leads` (ex: 50)
+
+Si l'utilisateur ne fournit pas tous les inputs, les lui demander avant de commencer.
+
+---
+
+## Pipeline séquentiel
+
+### Etape 1 : Scraping Google Maps
+- **Script :** `execution/scrape_google_maps.py`
+- **Input :** `--industry "{industry}" --location "{location}" --max_leads {max_leads}`
+- **Output :** `.tmp/scraped_leads.json`
+
+### Etape 2 : Qualification des sites
+- **Script :** `execution/qualify_site.py`
+- **Input :** `.tmp/scraped_leads.json`
+- **Output :** `.tmp/qualified_leads.json`
+- **Action :** Vérifie site actif, cherche emails génériques
+
+### Etape 3 : Enrichissement (Waterfall Strategy)
+- **Script :** `execution/enrich.py`
+- **Input :** `.tmp/qualified_leads.json`
+- **Stratégie cascade (coût optimisé) :**
+  1. **OSINT Serper** (gratuit) — Recherche nom décideur + LinkedIn
+  2. **Hunter.io pattern** (freemium) — Format email de l'entreprise
+  3. **Reconstruction email** (gratuit) — Combine nom + pattern + domaine
+- **Indicateurs de source :** `reconstructed` | `hunter_generic` | `not_found`
+
+### Etape 4 : Sauvegarde Excel
+- **Script :** `execution/save_to_excel.py`
+- **Output :** `Generate_leads.xlsx`
+- **Colonne ajoutée :** "Industrie" avec la valeur `industry`
+- **IMPORTANT :** Demander à l'utilisateur de fermer le fichier Excel avant exécution
+
+### Etape 5 : Sync HubSpot
+- **Script :** `execution/sync_hubspot.py`
+- **Logique Upsert :**
+  1. Chercher contact par email
+  2. Si existe → Mettre à jour champs manquants
+  3. Si n'existe pas → Créer contact + entreprise associée
+- **Jamais de doublons**
+
+---
+
+## Commandes utiles
+
+```bash
+# Pipeline complet
+python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
+
+# Scripts individuels
+python execution/scrape_google_maps.py --industry "Restaurants" --location "Paris"
+python execution/enrich.py --input .tmp/qualified_leads.json
+python execution/sync_hubspot.py
+python execution/sync_from_hubspot.py
+```
+
+---
+
+## Garde-fous
+- Ne jamais scraper sans input `industry` + `location`
+- Ne jamais push vers HubSpot sans vérification Upsert
+- Si un script échoue, lire l'erreur, corriger, réessayer (self-anneal)
+- Les fichiers `.tmp/` sont temporaires — les supprimer après usage

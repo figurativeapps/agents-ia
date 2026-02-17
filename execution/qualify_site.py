@@ -3,7 +3,7 @@ STEP 2: Website Qualification with Firecrawl
 Verifies if websites are active and extracts generic emails.
 
 Usage:
-    python 2_qualify_site.py --input .tmp/google_maps_results.json
+    python qualify_site.py --input .tmp/google_maps_results.json
 """
 
 import os
@@ -286,7 +286,7 @@ def main():
 
     print(f"\n✅ Step 2 complete")
     print(f"📄 Output: {output_path}")
-    print(f"\n➡️  Next step: Run enrichment with 5_enrich.py")
+    print(f"\n➡️  Next step: Run enrichment with enrich.py")
 
 
 if __name__ == '__main__':

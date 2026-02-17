@@ -1,6 +1,6 @@
 """
 Analyse de complétude et estimation des crédits pour les demandes de modélisation.
-Utilise la grille tarifaire définie dans directives/grille_credits_modelisation.md
+Utilise la grille tarifaire définie dans .claude/skills/handler.md
 
 Usage:
     python analyze_request.py --objet "Titre" --description "Contenu" --fichiers '[{"name": "photo.jpg"}]'

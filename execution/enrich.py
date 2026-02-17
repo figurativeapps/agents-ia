@@ -8,7 +8,7 @@ Waterfall Strategy:
 3. Email Reconstruction - Combine data to build email
 
 Usage:
-    python 5_enrich.py --input .tmp/qualified_leads.json
+    python enrich.py --input .tmp/qualified_leads.json
 """
 
 import os
