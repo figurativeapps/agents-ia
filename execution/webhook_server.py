@@ -92,6 +92,19 @@ app = FastAPI(
     version="3.0.0"
 )
 
+# New je add pour le CORS middleware pour autoriser les requêtes depuis le domaine du formulaire (arview.figurative.fr) afin que les formulaires puissent communiquer avec ce serveur sans problème de CORS.
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://arview.figurative.fr"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+
 # Logging
 logging.basicConfig(
     level=logging.INFO,
