@@ -1,9 +1,9 @@
 ---
-name: handler
+name: support
 description: "Traite les demandes de support et de modélisation 3D reçues par webhook. Classifie, estime les crédits, crée tickets HubSpot, et gère le workflow de validation avec le client. USE WHEN: l'utilisateur parle de tickets, demandes support, modélisation 3D, webhook, validation de crédits, ou workflow de traitement de demandes."
 ---
 
-# Skill: Handler — Support & Modélisation Request Processing
+# Skill: Support — Support & Modélisation Request Processing
 
 ## Trigger
 Webhook `POST /webhook/request` avec payload :

@@ -41,9 +41,9 @@ DOE (Directive → Orchestration → Execution) is a three-layer architecture fo
 agents_ia/
 ├── CLAUDE.md                    # Project brain (auto-injected)
 ├── .claude/skills/              # Specialized agent skills
-│   ├── hunter.md                # Mode A: Lead Generation
-│   ├── maker.md                 # Mode B: PDF Proposals
-│   └── handler.md               # Mode C: Support/Modélisation
+│   ├── lead_gen/                # Mode A: Lead Generation
+│   ├── PDF_gen/                 # Mode B: PDF Proposals
+│   └── support/                 # Mode C: Support/Modélisation
 ├── execution/                   # Deterministic Python scripts
 ├── tests/                       # Test scripts
 ├── docs/                        # Documentation
@@ -59,9 +59,9 @@ agents_ia/
 
 | Mode | Name | Purpose | Example Use Case |
 |------|------|---------|------------------|
-| **A** | Hunter | Lead generation & enrichment | B2B lead scraping, CRM sync |
-| **B** | Maker | Document generation | PDF proposals, reports |
-| **C** | Handler | Request processing | Support tickets, 3D modeling requests |
+| **A** | Lead_gen | Lead generation & enrichment | B2B lead scraping, CRM sync |
+| **B** | PDF_gen | Document generation | PDF proposals, reports |
+| **C** | Support | Request processing | Support tickets, 3D modeling requests |
 
 Each mode has its own skill file in `.claude/skills/`.
 
@@ -104,7 +104,7 @@ Check `CLAUDE.md` for the complete script registry.
 *"Find 50 B2B leads in Lyon"*
 
 ### 2. Agent Loads Skill
-Claude Code reads `.claude/skills/hunter.md` based on the request type.
+Claude Code reads `.claude/skills/lead_gen/SKILL.md` based on the request type.
 
 ### 3. Agent Executes Scripts
 Runs the appropriate sequence from `execution/`:

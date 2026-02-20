@@ -6,13 +6,13 @@ Architecture DOE (Directive-Orchestration-Execution) à 3 couches avec 3 workflo
 
 | Intent utilisateur | Skill | Subagent |
 |-------------------|-------|----------|
-| Leads, scraping, enrichissement, prospects | `/hunter` | `lead-hunter` |
-| PDF, proposition commerciale, plaquette | `/maker` | `pdf-maker` |
-| Tickets, support, modélisation 3D, webhook | `/handler` | `request-handler` |
+| Leads, scraping, enrichissement, prospects | `/lead_gen` | `lead_gen` |
+| PDF, proposition commerciale, plaquette | `/PDF_gen` | `PDF_gen` |
+| Tickets, support, modélisation 3D, webhook | `/support` | `support` |
 
 ## Script Registry
 
-### Mode A: Lead Generation (Hunter)
+### Mode A: Lead Generation (Lead_gen)
 
 | Script | Function | Input → Output |
 |--------|----------|----------------|
@@ -24,14 +24,14 @@ Architecture DOE (Directive-Orchestration-Execution) à 3 couches avec 3 workflo
 | `sync_from_hubspot.py` | Pull updates from HubSpot (Excel mode only) | HubSpot → Excel |
 | `run_pipeline.py` | Master pipeline orchestrator (Mode A) | Args → Full pipeline |
 
-### Mode B: PDF Maker
+### Mode B: PDF Generation (PDF_gen)
 
 | Script | Function | Input → Output |
 |--------|----------|----------------|
 | `generate_pdf.py` | Generate PDF from template | Data + Template → PDF |
 | `create_excel_template.py` | Create Excel input template | → Excel template |
 
-### Mode C: Support Handler (v3.0)
+### Mode C: Support (v3.0)
 
 | Script | Function | Input → Output |
 |--------|----------|----------------|
@@ -51,8 +51,8 @@ Architecture DOE (Directive-Orchestration-Execution) à 3 couches avec 3 workflo
 ```
 agents_ia/
 ├── CLAUDE.md               # This file
-├── .claude/skills/          # Skills with YAML frontmatter (hunter/, maker/, handler/)
-├── .claude/agents/          # Subagents (lead-hunter, pdf-maker, request-handler)
+├── .claude/skills/          # Skills with YAML frontmatter (lead_gen/, PDF_gen/, support/)
+├── .claude/agents/          # Subagents (lead_gen, PDF_gen, support)
 ├── execution/               # Deterministic Python scripts
 ├── tests/                   # Test scripts
 ├── docs/                    # Documentation
@@ -72,7 +72,7 @@ agents_ia/
 ## Workflow
 
 ```
-1. Identify Intent → Select Skill (/hunter, /maker, /handler)
+1. Identify Intent → Select Skill (/lead_gen, /PDF_gen, /support)
 2. Load Skill → Execute scripts from registry in sequence
 3. Finalize → Sync to HubSpot (primary) + Excel backup
 ```

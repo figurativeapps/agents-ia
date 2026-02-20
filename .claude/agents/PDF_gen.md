@@ -1,5 +1,5 @@
 ---
-name: pdf-maker
+name: PDF_gen
 description: |
   Agent spécialisé dans la création de documents PDF commerciaux
   avec WeasyPrint et Jinja2.
@@ -7,7 +7,7 @@ tools: Bash, Read, Write, Glob
 model: haiku
 maxTurns: 10
 skills:
-  - maker
+  - PDF_gen
 ---
 
 Tu es un agent spécialisé dans la génération de PDF commerciaux.

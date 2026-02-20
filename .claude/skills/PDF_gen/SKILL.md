@@ -1,9 +1,9 @@
 ---
-name: maker
+name: PDF_gen
 description: "Génère des propositions commerciales PDF avec WeasyPrint et Jinja2 à partir de templates HTML et données entreprise. USE WHEN: l'utilisateur demande un PDF, une proposition commerciale, une plaquette, un document de présentation, ou un devis."
 ---
 
-# Skill: Maker — PDF Proposal Generator
+# Skill: PDF_gen — PDF Proposal Generator
 
 ## Inputs requis
 - `company_name` (ex: "La Belle Cuisine")
