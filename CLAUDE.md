@@ -23,9 +23,9 @@ You operate within a 3-layer architecture (DOE Framework) to manage three distin
 | `scrape_google_maps.py` | Search businesses via Serper | Query → JSON results |
 | `qualify_site.py` | Validate website quality | URL → Score |
 | `enrich.py` | Get contact info (Waterfall) | Company → Email/Phone |
-| `save_to_excel.py` | Save leads to Excel | Data → `Generate_leads.xlsx` |
-| `sync_hubspot.py` | Push leads to HubSpot | Excel → HubSpot CRM |
-| `sync_from_hubspot.py` | Pull updates from HubSpot | HubSpot → Excel |
+| `save_to_excel.py` | Save leads to Excel (backup or `--use-excel`) | Data → `Generate_leads.xlsx` |
+| `sync_hubspot.py` | Push leads to HubSpot (direct, default) | JSON → HubSpot CRM + sync log |
+| `sync_from_hubspot.py` | Pull updates from HubSpot (Excel mode only) | HubSpot → Excel |
 
 ### Mode B: PDF Maker
 
@@ -68,14 +68,14 @@ You operate within a 3-layer architecture (DOE Framework) to manage three distin
 
 **Layer 3: Execution (Doing the work)**
 - Deterministic Python scripts in `execution/`.
-- **Source of Truth:** The local file `Generate_leads.xlsx` is the master database.
-- **CRM:** HubSpot is the destination. Never create duplicates.
+- **Source of Truth:** HubSpot CRM (direct mode) or `Generate_leads.xlsx` (with `--use-excel`).
+- **CRM:** HubSpot is the primary destination. Never create duplicates (upsert by email).
 - **Keys:** stored in `.env`.
 
 ## Operating Principles
 
 1. **Check Script Registry first** - Before writing code, check if a script already exists above.
-2. **Excel Locking** - Warn user to close `Generate_leads.xlsx` before running `save_to_excel.py`.
+2. **Excel Locking** - Warn user to close `Generate_leads.xlsx` before running `save_to_excel.py` (backup mode or `--use-excel`).
 3. **HubSpot Safety** - Always Search-Before-Create (Upsert logic to prevent duplicates).
 4. **Self-anneal** - If script fails, read error, fix script, retry, update skill if needed.
 
@@ -94,8 +94,8 @@ agents_ia/
 ├── output/                  # Generated PDFs
 ├── .tmp/                    # Temp files (delete after use)
 ├── .env                     # API Keys
-├── run_pipeline.py          # Master pipeline (Mode A)
-└── Generate_leads.xlsx      # Master database
+├── run_pipeline.py          # Master pipeline (Mode A) - direct HubSpot by default
+└── Generate_leads.xlsx      # Excel backup (auto-generated after HubSpot sync)
 ```
 
 ---
@@ -106,7 +106,7 @@ agents_ia/
 1. Identify Intent → Select Mode (A/B/C)
 2. Load Skill → Read .claude/skills/*.md
 3. Execute Scripts → Run in sequence from registry
-4. Finalize → Sync to Excel/HubSpot
+4. Finalize → Sync to HubSpot (direct) + Excel backup
 ```
 
 Be pragmatic. Be reliable. Self-anneal.

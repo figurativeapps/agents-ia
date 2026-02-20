@@ -38,32 +38,42 @@ Si l'utilisateur ne fournit pas tous les inputs, les lui demander avant de comme
   3. **Reconstruction email** (gratuit) — Combine nom + pattern + domaine
 - **Indicateurs de source :** `reconstructed` | `hunter_generic` | `not_found`
 
-### Etape 4 : Sauvegarde Excel
-- **Script :** `execution/save_to_excel.py`
-- **Output :** `Generate_leads.xlsx`
-- **Colonne ajoutée :** "Industrie" avec la valeur `industry`
-- **IMPORTANT :** Demander à l'utilisateur de fermer le fichier Excel avant exécution
-
-### Etape 5 : Sync HubSpot
+### Etape 4 : Sync HubSpot (mode par defaut)
 - **Script :** `execution/sync_hubspot.py`
 - **Logique Upsert :**
-  1. Chercher contact par email
+  1. Chercher contact par email (anti-duplication)
   2. Si existe → Mettre à jour champs manquants
   3. Si n'existe pas → Créer contact + entreprise associée
+- **Log :** `.tmp/sync_log_YYYYMMDD_HHMMSS.json`
 - **Jamais de doublons**
+
+### Etape 5 : Backup Excel (automatique apres sync)
+- **Script :** `execution/save_to_excel.py --backup-mode`
+- **Output :** `Generate_leads.xlsx` avec Statut_Sync=Synced
+- **IMPORTANT :** Demander à l'utilisateur de fermer le fichier Excel avant exécution
+- Desactivable avec `--no-backup`
+
+### Mode alternatif : Excel d'abord (ancien workflow)
+- Ajouter `--use-excel` au pipeline pour utiliser l'ancien flow : Excel → HubSpot
 
 ---
 
 ## Commandes utiles
 
 ```bash
-# Pipeline complet
+# Pipeline complet (direct HubSpot + backup Excel, defaut)
 python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
+
+# Sans backup Excel
+python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --no-backup
+
+# Ancien workflow (Excel d'abord)
+python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --use-excel
 
 # Scripts individuels
 python execution/scrape_google_maps.py --industry "Restaurants" --location "Paris"
 python execution/enrich.py --input .tmp/qualified_leads.json
-python execution/sync_hubspot.py
+python execution/sync_hubspot.py --input .tmp/enriched_leads.json --write-log
 python execution/sync_from_hubspot.py
 ```
 

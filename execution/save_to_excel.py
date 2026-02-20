@@ -155,6 +155,8 @@ def save_to_excel(leads_data, excel_path):
 def main():
     parser = argparse.ArgumentParser(description='Save leads to Excel master database')
     parser.add_argument('--input', required=True, help='Input JSON file with enriched leads')
+    parser.add_argument('--backup-mode', action='store_true',
+        help='Backup mode: mark all leads as Synced (used after direct HubSpot sync)')
 
     args = parser.parse_args()
 
@@ -169,10 +171,19 @@ def main():
     with open(input_path, 'r', encoding='utf-8') as f:
         leads = json.load(f)
 
+    # In backup mode, mark all leads as already synced
+    if args.backup_mode:
+        for lead in leads:
+            if lead.get('Statut_Sync') not in ('Failed', 'No Email'):
+                lead['Statut_Sync'] = 'Synced'
+
     # Save to Excel
     save_to_excel(leads, excel_path)
 
-    print(f"\n➡️  Next step: Sync to HubSpot with sync_hubspot.py")
+    if args.backup_mode:
+        print(f"\n📦 Excel backup complete (post-HubSpot sync)")
+    else:
+        print(f"\n➡️  Next step: Sync to HubSpot with sync_hubspot.py")
 
 
 if __name__ == '__main__':

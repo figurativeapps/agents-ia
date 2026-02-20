@@ -16,6 +16,7 @@ from hubspot import HubSpot
 from hubspot.crm.contacts import SimplePublicObjectInputForCreate, ApiException
 from hubspot.crm.companies import SimplePublicObjectInputForCreate as CompanyInput
 from time import sleep
+from datetime import datetime
 
 # Fix Windows console encoding issues
 if sys.platform == 'win32':
@@ -309,8 +310,13 @@ def sync_lead_to_hubspot(client, lead):
     return contact_id, new_status
 
 
-def sync_leads(input_file):
-    """Sync all leads to HubSpot"""
+def sync_leads(input_file, write_log=False):
+    """Sync all leads to HubSpot
+
+    Args:
+        input_file: Path to enriched leads JSON
+        write_log: If True, write a structured sync log to .tmp/
+    """
 
     # Initialize HubSpot client
     client = init_hubspot_client()
@@ -323,6 +329,8 @@ def sync_leads(input_file):
 
     synced_count = 0
     skipped_count = 0
+    failed_count = 0
+    results = []
 
     for i, lead in enumerate(leads, 1):
         print(f"[{i}/{len(leads)}]")
@@ -333,17 +341,28 @@ def sync_leads(input_file):
         lead['Statut_Sync'] = new_status
 
         if contact_id:
-            # Store HubSpot ID back in lead data
             lead['HubSpot_ID'] = str(contact_id)
             synced_count += 1
         elif new_status == 'Deleted':
             skipped_count += 1
+        elif new_status in ('Failed', 'No Email'):
+            failed_count += 1
+
+        # Collect result for log
+        results.append({
+            "company": lead.get('Nom_Entreprise', 'Unknown'),
+            "email": lead.get('Email_Decideur') or lead.get('Email_Generique', ''),
+            "status": new_status,
+            "hubspot_id": str(contact_id) if contact_id else None,
+        })
 
         # Rate limiting
         sleep(0.5)
 
     print(f"\n✅ Sync complete!")
     print(f"  📊 Total: {synced_count}/{len(leads)} contacts synced")
+    if failed_count > 0:
+        print(f"  ❌ Failed: {failed_count} contacts")
     if skipped_count > 0:
         print(f"  🚫 Skipped: {skipped_count} contacts (marked as Deleted)")
 
@@ -351,12 +370,33 @@ def sync_leads(input_file):
     with open(input_file, 'w', encoding='utf-8') as f:
         json.dump(leads, f, ensure_ascii=False, indent=2)
 
+    # Write structured sync log
+    if write_log:
+        log_dir = Path(input_file).parent
+        log_filename = f"sync_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        log_path = log_dir / log_filename
+
+        log_data = {
+            "run_date": datetime.now().isoformat(),
+            "total": len(leads),
+            "synced": synced_count,
+            "failed": failed_count,
+            "skipped": skipped_count,
+            "results": results
+        }
+
+        with open(log_path, 'w', encoding='utf-8') as f:
+            json.dump(log_data, f, ensure_ascii=False, indent=2)
+
+        print(f"  📝 Sync log: {log_path}")
+
     return leads
 
 
 def main():
     parser = argparse.ArgumentParser(description='Sync leads to HubSpot CRM')
     parser.add_argument('--input', required=True, help='Input JSON file with enriched leads')
+    parser.add_argument('--write-log', action='store_true', help='Write a structured sync results log to .tmp/')
 
     args = parser.parse_args()
 
@@ -367,9 +407,9 @@ def main():
         return
 
     # Sync to HubSpot
-    sync_leads(input_path)
+    sync_leads(input_path, write_log=args.write_log)
 
-    print(f"\n✅ Step 6 complete - All leads synced to HubSpot!")
+    print(f"\n✅ HubSpot sync complete!")
     print(f"\n💡 Tip: Check your HubSpot CRM to verify the data")
 
 

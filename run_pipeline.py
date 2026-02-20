@@ -2,10 +2,14 @@
 Master Pipeline Orchestrator
 Runs the complete lead generation workflow with a single command.
 
+Default: Direct sync to HubSpot + Excel backup
+Old workflow: Use --use-excel to sync via Excel first
+
 Usage:
     python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
-    python run_pipeline.py --industry "Restaurants" --location "Paris" --max_leads 20 --skip-reviews
-    python run_pipeline.py --industry "E-commerce" --location "Lyon" --max_leads 30 --no-hubspot
+    python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --no-backup
+    python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --use-excel
+    python run_pipeline.py --industry "E-commerce" --location "Lyon" --max_leads 30 --no-hubspot --use-excel
 """
 
 import subprocess
@@ -73,8 +77,9 @@ def main():
         epilog="""
 Examples:
   python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
-  python run_pipeline.py --industry "Restaurants" --location "Paris" --max_leads 20
-  python run_pipeline.py --industry "E-commerce" --location "Lyon" --max_leads 30 --no-hubspot
+  python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --no-backup
+  python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --use-excel
+  python run_pipeline.py --industry "E-commerce" --location "Lyon" --max_leads 30 --no-hubspot --use-excel
         """
     )
 
@@ -82,6 +87,8 @@ Examples:
     parser.add_argument('--location', required=True, help='Location to search (e.g., "Bordeaux")')
     parser.add_argument('--max_leads', type=int, default=50, help='Maximum number of leads (default: 50)')
     parser.add_argument('--no-hubspot', action='store_true', help='Skip HubSpot sync')
+    parser.add_argument('--use-excel', action='store_true', help='Use Excel as intermediate step before HubSpot (old workflow)')
+    parser.add_argument('--no-backup', action='store_true', help='Skip Excel backup after HubSpot sync (direct mode only)')
     parser.add_argument('--scrape-only', action='store_true', help='Only run scraping (for testing)')
 
     args = parser.parse_args()
@@ -101,6 +108,10 @@ Examples:
     print(f"   Location:    {args.location}")
     print(f"   Max Leads:   {args.max_leads}")
     print(f"   HubSpot:     {'No' if args.no_hubspot else 'Yes'}")
+    if args.use_excel:
+        print(f"   Mode:        Excel + HubSpot (ancien workflow)")
+    else:
+        print(f"   Mode:        Direct HubSpot{' (sans backup Excel)' if args.no_backup else ' + backup Excel'}")
 
     # Project paths
     project_root = Path(__file__).parent
@@ -122,16 +133,29 @@ Examples:
     enrich_cmd = f'python "{exec_dir}/enrich.py" --input "{project_root}/.tmp/qualified_leads.json"'
     run_command("STEP 3: Enriching Contacts", enrich_cmd, critical=True)
 
-    # STEP 4: Save to Excel
-    save_cmd = f'python "{exec_dir}/save_to_excel.py" --input "{project_root}/.tmp/enriched_leads.json"'
-    run_command("STEP 4: Saving to Excel Database", save_cmd, critical=True)
+    enriched_path = f"{project_root}/.tmp/enriched_leads.json"
 
-    # STEP 5: Sync to HubSpot (optional)
-    if not args.no_hubspot:
-        hubspot_cmd = f'python "{exec_dir}/sync_hubspot.py" --input "{project_root}/.tmp/enriched_leads.json"'
-        run_command("STEP 5: Syncing to HubSpot CRM", hubspot_cmd, critical=False)
+    if args.use_excel:
+        # ANCIEN FLOW : Excel puis HubSpot
+        save_cmd = f'python "{exec_dir}/save_to_excel.py" --input "{enriched_path}"'
+        run_command("STEP 4: Saving to Excel Database", save_cmd, critical=True)
+
+        if not args.no_hubspot:
+            hubspot_cmd = f'python "{exec_dir}/sync_hubspot.py" --input "{enriched_path}"'
+            run_command("STEP 5: Syncing to HubSpot CRM", hubspot_cmd, critical=False)
+        else:
+            print("\n⏭️  Skipping HubSpot sync (--no-hubspot flag)")
     else:
-        print("\n⏭️  Skipping HubSpot sync (--no-hubspot flag)")
+        # NOUVEAU DEFAULT : Direct HubSpot + backup Excel
+        if not args.no_hubspot:
+            hubspot_cmd = f'python "{exec_dir}/sync_hubspot.py" --input "{enriched_path}" --write-log'
+            run_command("STEP 4: Syncing directly to HubSpot CRM", hubspot_cmd, critical=False)
+
+            if not args.no_backup:
+                backup_cmd = f'python "{exec_dir}/save_to_excel.py" --input "{enriched_path}" --backup-mode'
+                run_command("STEP 5: Excel backup (post-sync)", backup_cmd, critical=False)
+        else:
+            print("\n⚠️  HubSpot et Excel backup desactives. Donnees enrichies dans .tmp/enriched_leads.json")
 
     # Final summary
     end_time = datetime.now()
@@ -142,12 +166,15 @@ Examples:
     print(f"{'='*60}")
     print(f"⏱️  Total time: {duration:.1f} seconds ({duration/60:.1f} minutes)")
     print(f"📊 Results:")
-    print(f"   - Excel database: Generate_leads.xlsx")
-    print(f"   - Intermediate files: .tmp/")
     if not args.no_hubspot:
         print(f"   - HubSpot CRM: Contacts synced")
+    if args.use_excel or (not args.no_hubspot and not args.no_backup):
+        print(f"   - Excel database: Generate_leads.xlsx")
+    print(f"   - Intermediate files: .tmp/")
+    if not args.use_excel and not args.no_hubspot:
+        print(f"   - Sync log: .tmp/sync_log_*.json")
     print(f"\n💡 Next steps:")
-    print(f"   1. Open Generate_leads.xlsx to review leads")
+    print(f"   1. Check HubSpot CRM to review leads")
     print(f"   2. Generate PDFs: python execution/generate_pdf.py --company 'Company Name'")
     print(f"   3. Launch email campaign using cold outreach templates")
 

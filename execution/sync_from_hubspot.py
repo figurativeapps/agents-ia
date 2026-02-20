@@ -196,7 +196,9 @@ def main():
 
     if not excel_path.exists():
         print(f"❌ Excel file not found: {excel_path}")
-        print("Please run the pipeline first to generate leads.")
+        print("In direct mode (default), HubSpot is the source of truth.")
+        print("This script is only needed with --use-excel mode.")
+        print("To create an Excel backup: python run_pipeline.py --industry ... --location ...")
         return
 
     sync_from_hubspot(excel_path)
