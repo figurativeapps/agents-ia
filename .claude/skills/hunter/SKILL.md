@@ -1,11 +1,16 @@
-# Skill: Hunter — Lead Generation B2B
-
-## Quand utiliser cette skill
-L'utilisateur demande de trouver des leads, scraper des entreprises, enrichir des contacts, ou synchroniser avec HubSpot.
-
-**Mots-clés déclencheurs :** leads, scraper, enrichir, prospects, entreprises, HubSpot sync, Google Maps, industrie, ville
-
 ---
+name: hunter
+description: |
+  Pipeline de génération de leads B2B : scrape Google Maps via Serper,
+  qualifie les sites web, enrichit les contacts via waterfall Hunter.io/OSINT,
+  et synchronise vers HubSpot CRM.
+  USE WHEN: l'utilisateur demande des leads, du scraping, de l'enrichissement,
+  des prospects, une sync HubSpot, des entreprises Google Maps, une recherche
+  par industrie ou de la découverte de contacts.
+allowed-tools: Bash, Read, Write
+---
+
+# Skill: Hunter — Lead Generation B2B
 
 ## Inputs requis
 - `industry` (ex: "Cuisinistes")

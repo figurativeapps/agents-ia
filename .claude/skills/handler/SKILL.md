@@ -1,11 +1,15 @@
-# Skill: Handler — Support & Modélisation Request Processing
-
-## Quand utiliser cette skill
-Une demande client arrive via webhook (formulaire Figurative), ou l'utilisateur demande de traiter/classifier une demande de support ou de modélisation 3D.
-
-**Mots-clés déclencheurs :** demande, ticket, support, modélisation, webhook, classifier, HubSpot ticket, ClickUp, validation crédits
-
 ---
+name: handler
+description: |
+  Traite les demandes de support et de modélisation 3D reçues par webhook.
+  Classifie, estime les crédits, crée tickets HubSpot, et gère le workflow
+  de validation avec le client.
+  USE WHEN: l'utilisateur parle de tickets, demandes support, modélisation 3D,
+  webhook, validation de crédits, ou workflow de traitement de demandes.
+allowed-tools: Bash, Read, Write
+---
+
+# Skill: Handler — Support & Modélisation Request Processing
 
 ## Trigger
 Webhook `POST /webhook/request` avec payload :
@@ -51,14 +55,7 @@ Webhook `POST /webhook/request` avec payload :
 ### Step 5 : Analyse + Estimation crédits (si modélisation)
 - **Condition :** `type_final == MODELISATION`
 - **Script :** `execution/analyze_request.py`
-- **Grille de crédits :**
-
-| Crédits | Condition |
-|---------|-----------|
-| **1 crédit** | Fichier 3D fourni avec texture (ajustements) OU objet simple (forme basique, peu de détails) |
-| **2 crédits** | Modélisation complète requise, complexité moyenne, textures multiples |
-| **Admin requis** | Objet très complexe, mécanismes, doute sur faisabilité |
-
+- **Grille de crédits :** Voir [docs/credit-grid.md](docs/credit-grid.md)
 - **Complétude requise :** Au moins 1 fichier visuel + description suffisante
 - **Output :** `credits_estimes`, `completeness`, `missing_info`
 
@@ -125,4 +122,3 @@ python execution/validation_workflow.py
 - `credits_estimes` : 1 ou 2
 - `clickup_subtask_id` : ID de la subtask liée
 - `fichiers_urls` : URLs R2 des fichiers uploadés
-

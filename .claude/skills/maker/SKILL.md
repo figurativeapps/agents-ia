@@ -1,11 +1,14 @@
-# Skill: Maker — PDF Proposal Generator
-
-## Quand utiliser cette skill
-L'utilisateur demande de générer un PDF, créer une proposition commerciale, ou produire une plaquette pour un lead/entreprise.
-
-**Mots-clés déclencheurs :** PDF, plaquette, proposition, proposal, générer document, devis commercial
-
 ---
+name: maker
+description: |
+  Génère des propositions commerciales PDF avec WeasyPrint et Jinja2 à partir
+  de templates HTML et données entreprise.
+  USE WHEN: l'utilisateur demande un PDF, une proposition commerciale, une
+  plaquette, un document de présentation, ou un devis.
+allowed-tools: Bash, Read, Write
+---
+
+# Skill: Maker — PDF Proposal Generator
 
 ## Inputs requis
 - `company_name` (ex: "La Belle Cuisine")
@@ -59,4 +62,3 @@ python execution/create_excel_template.py
 - Vérifier le rendu PDF (pas de texte coupé)
 - Taille fichier < 5 MB
 - Prêt pour envoi email ou rattachement au contact HubSpot
-
