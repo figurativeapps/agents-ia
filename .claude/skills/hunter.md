@@ -62,13 +62,13 @@ Si l'utilisateur ne fournit pas tous les inputs, les lui demander avant de comme
 
 ```bash
 # Pipeline complet (direct HubSpot + backup Excel, defaut)
-python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
+python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
 
 # Sans backup Excel
-python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --no-backup
+python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --no-backup
 
 # Ancien workflow (Excel d'abord)
-python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --use-excel
+python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --use-excel
 
 # Scripts individuels
 python execution/scrape_google_maps.py --industry "Restaurants" --location "Paris"

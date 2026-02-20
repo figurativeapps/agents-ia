@@ -50,8 +50,7 @@ agents_ia/
 ├── templates/                   # Jinja2 templates for PDF
 ├── output/                      # Generated PDFs
 ├── .env                         # API keys (not versioned)
-├── run_pipeline.py              # Master pipeline (Mode A)
-└── Generate_leads.xlsx          # Master database
+└── Generate_leads.xlsx          # Master database (auto-generated)
 ```
 
 ---
@@ -89,7 +88,7 @@ cp .env.template .env
 
 ```bash
 # Mode A: Lead Generation
-python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
+python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
 
 # Mode C: Webhook Server
 uvicorn execution.webhook_server:app --host 0.0.0.0 --port 5000

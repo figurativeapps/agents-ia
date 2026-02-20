@@ -23,7 +23,7 @@ python execution/create_excel_template.py   # Crée Generate_leads.xlsx
 
 ```bash
 # Pipeline complet (50 leads)
-python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
+python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
 
 # Ou étape par étape
 python execution/scrape_google_maps.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50

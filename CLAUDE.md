@@ -26,6 +26,7 @@ You operate within a 3-layer architecture (DOE Framework) to manage three distin
 | `save_to_excel.py` | Save leads to Excel (backup or `--use-excel`) | Data → `Generate_leads.xlsx` |
 | `sync_hubspot.py` | Push leads to HubSpot (direct, default) | JSON → HubSpot CRM + sync log |
 | `sync_from_hubspot.py` | Pull updates from HubSpot (Excel mode only) | HubSpot → Excel |
+| `run_pipeline.py` | Master pipeline orchestrator (Mode A) | Args → Full pipeline |
 
 ### Mode B: PDF Maker
 
@@ -94,7 +95,6 @@ agents_ia/
 ├── output/                  # Generated PDFs
 ├── .tmp/                    # Temp files (delete after use)
 ├── .env                     # API Keys
-├── run_pipeline.py          # Master pipeline (Mode A) - direct HubSpot by default
 └── Generate_leads.xlsx      # Excel backup (auto-generated after HubSpot sync)
 ```
 

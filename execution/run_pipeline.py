@@ -6,10 +6,10 @@ Default: Direct sync to HubSpot + Excel backup
 Old workflow: Use --use-excel to sync via Excel first
 
 Usage:
-    python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
-    python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --no-backup
-    python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --use-excel
-    python run_pipeline.py --industry "E-commerce" --location "Lyon" --max_leads 30 --no-hubspot --use-excel
+    python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
+    python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --no-backup
+    python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --use-excel
+    python execution/run_pipeline.py --industry "E-commerce" --location "Lyon" --max_leads 30 --no-hubspot --use-excel
 """
 
 import subprocess
@@ -76,10 +76,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
-  python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --no-backup
-  python run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --use-excel
-  python run_pipeline.py --industry "E-commerce" --location "Lyon" --max_leads 30 --no-hubspot --use-excel
+  python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
+  python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --no-backup
+  python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --use-excel
+  python execution/run_pipeline.py --industry "E-commerce" --location "Lyon" --max_leads 30 --no-hubspot --use-excel
         """
     )
 
@@ -114,8 +114,8 @@ Examples:
         print(f"   Mode:        Direct HubSpot{' (sans backup Excel)' if args.no_backup else ' + backup Excel'}")
 
     # Project paths
-    project_root = Path(__file__).parent
-    exec_dir = project_root / 'execution'
+    exec_dir = Path(__file__).parent
+    project_root = exec_dir.parent
 
     # STEP 1: Scrape Google Maps
     scrape_cmd = f'python "{exec_dir}/scrape_google_maps.py" --industry "{args.industry}" --location "{args.location}" --max_leads {args.max_leads}'
