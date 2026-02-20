@@ -1,11 +1,6 @@
 ---
 name: maker
-description: |
-  Génère des propositions commerciales PDF avec WeasyPrint et Jinja2 à partir
-  de templates HTML et données entreprise.
-  USE WHEN: l'utilisateur demande un PDF, une proposition commerciale, une
-  plaquette, un document de présentation, ou un devis.
-allowed-tools: Bash, Read, Write
+description: "Génère des propositions commerciales PDF avec WeasyPrint et Jinja2 à partir de templates HTML et données entreprise. USE WHEN: l'utilisateur demande un PDF, une proposition commerciale, une plaquette, un document de présentation, ou un devis."
 ---
 
 # Skill: Maker — PDF Proposal Generator
