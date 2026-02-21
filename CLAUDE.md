@@ -28,7 +28,8 @@ Architecture DOE (Directive-Orchestration-Execution) à 3 couches avec 3 workflo
 
 | Script | Function | Input → Output |
 |--------|----------|----------------|
-| `generate_pdf.py` | Generate PDF from template | Data + Template → PDF |
+| `generate_pdf.py` | Generate PDF from HTML template | Data + Template → PDF |
+| `overlay_pdf.py` | Overlay image + QR code on Canva PDF | Image + URL → PDF |
 | `create_excel_template.py` | Create Excel input template | → Excel template |
 
 ### Mode C: Support (v3.0)

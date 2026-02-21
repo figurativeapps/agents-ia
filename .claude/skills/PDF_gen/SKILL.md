@@ -52,8 +52,53 @@ python execution/create_excel_template.py
 
 ---
 
+---
+
+## Pipeline B : Overlay sur template Canva
+
+### Inputs requis
+- `image` — Chemin vers l'image à insérer (différente par lead)
+- `url` — URL dynamique pour le QR code et lien cliquable
+- `company` (optionnel) — Nom entreprise pour le fichier output
+
+### Etape 1 : Preview (positionnement)
+```bash
+python execution/overlay_pdf.py --preview
+```
+Affiche les dimensions du PDF et les repères pour positionner image/QR.
+
+### Etape 2 : Génération avec overlay
+```bash
+python execution/overlay_pdf.py \
+  --image photo.jpg \
+  --url "https://example.com/lead" \
+  --company "Acme Corp" \
+  --image-rect "x0,y0,x1,y1" \
+  --qr-rect "x0,y0,x1,y1"
+```
+
+### Template Canva
+- **Fichier :** `template_plaquette_co.pdf` (racine du projet)
+- **Dimensions :** 930 x 1316 points (328 x 464 mm)
+- **Moteur :** PyMuPDF (fitz) + qrcode
+
+### Options
+| Argument | Description | Défaut |
+|----------|-------------|--------|
+| `--template` | PDF template | `template_plaquette_co.pdf` |
+| `--image` | Image à insérer | requis |
+| `--url` | URL QR code + lien | requis |
+| `--image-rect` | Position image (x0,y0,x1,y1 pts) | `50,50,250,200` |
+| `--qr-rect` | Position QR code (x0,y0,x1,y1 pts) | `450,650,550,750` |
+| `--page` | Page cible (0-indexed) | `0` |
+| `--preview` | Mode aperçu dimensions | — |
+
+---
+
 ## Contrôle qualité
 - Vérifier que tous les placeholders sont remplis (pas de `{{ }}` vides)
 - Vérifier le rendu PDF (pas de texte coupé)
 - Taille fichier < 5 MB
+- QR code lisible (scanner avec téléphone)
+- Lien URL cliquable dans le PDF
 - Prêt pour envoi email ou rattachement au contact HubSpot
