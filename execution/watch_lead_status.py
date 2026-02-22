@@ -227,16 +227,33 @@ def mark_contact_processed(contact_id: str, subtask_id: str) -> bool:
 
 
 # =============================================================================
-# EXTRACT IMAGE URL FROM HUBSPOT NOTES
+# PARSE PROSPECT INFO FROM HUBSPOT NOTE
 # =============================================================================
 
 import re
 
 _IMG_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+_HREF_RE = re.compile(r'<a[^>]+href=["\']([^"\']+)["\']', re.IGNORECASE)
+_URL_RE = re.compile(r'https?://[^\s<>"\']+')
+_TAG_RE = re.compile(r'<[^>]+>')
 
 
-def get_image_from_notes(contact_id: str) -> str | None:
-    """Get the most recent image URL from notes associated with a contact."""
+def _strip_html(html: str) -> str:
+    """Strip HTML tags and decode entities."""
+    text = _TAG_RE.sub(' ', html)
+    text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+    text = text.replace('&nbsp;', ' ').replace('&#x27;', "'")
+    return ' '.join(text.split())
+
+
+def parse_prospect_note(contact_id: str) -> Dict | None:
+    """
+    Read the most recent non-empty note on a contact and extract:
+      - site_url: first URL that isn't a HubSpot/image URL
+      - description: plain text (excluding URLs)
+      - image_urls: list of all image src URLs
+    Returns dict or None if no usable note found.
+    """
     client = get_hubspot_client()
     try:
         assoc = client.crm.associations.v4.basic_api.get_page(
@@ -245,21 +262,68 @@ def get_image_from_notes(contact_id: str) -> str | None:
             to_object_type="notes",
             limit=5,
         )
-        for result in assoc.results:
-            note_id = result.to_object_id
-            try:
-                note = client.crm.objects.notes.basic_api.get_by_id(
-                    note_id=note_id,
-                    properties=["hs_note_body"],
-                )
-                body = note.properties.get("hs_note_body", "") or ""
-                match = _IMG_RE.search(body)
-                if match:
-                    return match.group(1)
-            except Exception:
-                continue
     except Exception as e:
-        logger.debug(f"Could not read notes for contact {contact_id}: {e}")
+        logger.debug(f"Could not read note associations for {contact_id}: {e}")
+        return None
+
+    for result in assoc.results:
+        note_id = result.to_object_id
+        try:
+            note = client.crm.objects.notes.basic_api.get_by_id(
+                note_id=note_id,
+                properties=["hs_note_body", "hs_timestamp"],
+            )
+            body = note.properties.get("hs_note_body", "") or ""
+            if not body.strip():
+                continue
+
+            logger.debug(f"Note {note_id} raw HTML: {body[:500]}")
+
+            # --- Extract from raw HTML before stripping tags ---
+            image_urls = _IMG_RE.findall(body)
+            href_urls = _HREF_RE.findall(body)
+
+            # Plain text + URLs visible after stripping
+            plain = _strip_html(body)
+            plain_urls = _URL_RE.findall(plain)
+
+            # Merge all discovered URLs (href first, then plain-text), deduplicated
+            all_urls = list(dict.fromkeys(href_urls + plain_urls))
+
+            image_url_set = set(image_urls)
+            skip_domains = ("hubspot.com", "hubspotusercontent", "hsforms.com")
+
+            # Site URL = first URL that isn't HubSpot infra or an image src
+            site_url = None
+            for u in all_urls:
+                if u in image_url_set:
+                    continue
+                if any(d in u for d in skip_domains):
+                    continue
+                site_url = u
+                break
+
+            # Description = plain text with ALL discovered URLs removed
+            desc_text = plain
+            for u in all_urls:
+                desc_text = desc_text.replace(u, '')
+            for u in image_urls:
+                desc_text = desc_text.replace(u, '')
+            description = ' '.join(desc_text.split()).strip()
+
+            logger.debug(f"Note {note_id} parsed → site_url={site_url}, "
+                         f"description={description[:80]!r}, images={len(image_urls)}")
+
+            if site_url or description or image_urls:
+                return {
+                    "site_url": site_url or "",
+                    "description": description or "",
+                    "image_urls": image_urls,
+                }
+        except Exception as exc:
+            logger.debug(f"Error parsing note {note_id}: {exc}")
+            continue
+
     return None
 
 
@@ -271,12 +335,24 @@ def process_lead(lead: Dict) -> bool:
     """Create ClickUp subtask with prospect info and mark contact as processed."""
     logger.info(f"  → Processing: {lead['contact_name']} ({lead['email']})")
 
-    # Enrich prospect info with image from HubSpot note
-    prospect_info = lead.get("prospect_info", {})
-    image_url = get_image_from_notes(lead["contact_id"])
-    if image_url:
-        prospect_info["image_url"] = image_url
-        logger.info(f"  📷 Found image in HubSpot note")
+    # Primary source: parse the HubSpot note for all prospect info
+    note_data = parse_prospect_note(lead["contact_id"])
+
+    # Fallback to HubSpot properties if note is missing a field
+    props = lead.get("prospect_info", {})
+    prospect_info = {
+        "site_url": (note_data or {}).get("site_url") or props.get("site_url", ""),
+        "description": (note_data or {}).get("description") or props.get("description", ""),
+        "image_urls": (note_data or {}).get("image_urls", []),
+        "objet": props.get("objet", ""),
+    }
+
+    if prospect_info.get("image_urls"):
+        logger.info(f"  📷 Found {len(prospect_info['image_urls'])} image(s) in note")
+    if prospect_info.get("site_url"):
+        logger.info(f"  🔗 Site client: {prospect_info['site_url']}")
+    if prospect_info.get("description"):
+        logger.info(f"  📝 Description: {prospect_info['description'][:80]}")
 
     result = create_prospection_subtask(
         contact_name=lead["contact_name"],

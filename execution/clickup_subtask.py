@@ -329,13 +329,19 @@ def create_prospection_subtask(
             # Add prospect info as a comment if available
             if prospect_info:
                 info = prospect_info
-                comment = f"**Objet à modéliser** : {info.get('objet', '—')}\n"
-                comment += f"**Site client** : {info.get('site_url', '—')}\n"
-                comment += f"**Description** : {info.get('description', '—')}\n"
-                if info.get("image_url"):
-                    comment += f"**Image** : {info['image_url']}\n"
-                add_comment_to_task(subtask_id, comment)
-                print("📝 Added prospect info comment")
+                parts = []
+                if info.get("objet"):
+                    parts.append(f"**Objet à modéliser** : {info['objet']}")
+                if info.get("site_url"):
+                    parts.append(f"**Site client** : {info['site_url']}")
+                if info.get("description"):
+                    parts.append(f"**Description** : {info['description']}")
+                for i, img in enumerate(info.get("image_urls", []), 1):
+                    label = "Image" if len(info.get("image_urls", [])) == 1 else f"Image {i}"
+                    parts.append(f"**{label}** : {img}")
+                if parts:
+                    add_comment_to_task(subtask_id, "\n".join(parts))
+                    print("📝 Added prospect info comment")
 
             return {"subtask_id": subtask_id, "subtask_url": subtask_url, "success": True}
 
