@@ -205,41 +205,40 @@ def create_subtask(
 
 
 # =============================================================================
-# CLICKUP CUSTOM FIELD "lien ra"
+# CLICKUP CUSTOM FIELDS
 # =============================================================================
 
-_lien_ra_field_id_cache: str | None = None
+_custom_field_cache: dict[str, str] = {}
 
 
-def ensure_lien_ra_field(list_id: str) -> str | None:
-    """Get or create the 'lien ra' text custom field on the list. Returns field_id."""
-    global _lien_ra_field_id_cache
-    if _lien_ra_field_id_cache:
-        return _lien_ra_field_id_cache
+def ensure_custom_field(list_id: str, field_name: str, field_type: str = "text") -> str | None:
+    """Get or create a custom field on the list by name. Returns field_id."""
+    cache_key = f"{list_id}:{field_name.lower()}"
+    if cache_key in _custom_field_cache:
+        return _custom_field_cache[cache_key]
 
     url = f"{CLICKUP_API_BASE}/list/{list_id}/field"
     try:
         resp = requests.get(url, headers=get_headers(), timeout=30)
         if resp.status_code == 200:
             for field in resp.json().get("fields", []):
-                if field.get("name", "").lower() == "lien ra":
-                    _lien_ra_field_id_cache = field["id"]
-                    return _lien_ra_field_id_cache
+                if (field.get("name") or "").lower() == field_name.lower():
+                    _custom_field_cache[cache_key] = field["id"]
+                    return _custom_field_cache[cache_key]
     except Exception:
         pass
 
-    # Field doesn't exist — create it
     try:
-        payload = {"name": "lien ra", "type": "text"}
+        payload = {"name": field_name, "type": field_type}
         resp = requests.post(url, headers=get_headers(), json=payload, timeout=30)
         if resp.status_code == 200:
-            _lien_ra_field_id_cache = resp.json().get("id")
-            print(f"✅ Created ClickUp custom field 'lien ra': {_lien_ra_field_id_cache}")
-            return _lien_ra_field_id_cache
+            _custom_field_cache[cache_key] = resp.json().get("id")
+            print(f"✅ Created ClickUp custom field '{field_name}': {_custom_field_cache[cache_key]}")
+            return _custom_field_cache[cache_key]
         else:
-            print(f"⚠️  Could not create 'lien ra' field: {resp.status_code} {resp.text[:200]}")
+            print(f"⚠️  Could not create '{field_name}' field: {resp.status_code} {resp.text[:200]}")
     except Exception as e:
-        print(f"⚠️  Could not create 'lien ra' field: {e}")
+        print(f"⚠️  Could not create '{field_name}' field: {e}")
 
     return None
 
@@ -309,10 +308,16 @@ def create_prospection_subtask(
         "assignees": [int(CLICKUP_ASSIGNEE_ID)] if CLICKUP_ASSIGNEE_ID else []
     }
 
-    # Add custom field "lien ra" (empty, for admin to fill later)
-    lien_ra_id = ensure_lien_ra_field(list_id)
+    # Add custom fields (empty, for admin to fill later)
+    custom_fields = []
+    lien_ra_id = ensure_custom_field(list_id, "lien ra")
     if lien_ra_id:
-        payload["custom_fields"] = [{"id": lien_ra_id, "value": ""}]
+        custom_fields.append({"id": lien_ra_id, "value": ""})
+    titre_id = ensure_custom_field(list_id, "Titre snapshot")
+    if titre_id:
+        custom_fields.append({"id": titre_id, "value": ""})
+    if custom_fields:
+        payload["custom_fields"] = custom_fields
 
     url = f"{CLICKUP_API_BASE}/list/{list_id}/task"
 

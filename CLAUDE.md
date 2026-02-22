@@ -70,8 +70,8 @@ agents_ia/
 
 Two-phase polling script running on VPS:
 
-- **Phase 1 (NEW→OPEN)**: User fills `prospect_objet`, `prospect_site_url`, `prospect_description` + image note on HubSpot contact, then sets `hs_lead_status=OPEN`. Script creates ClickUp subtask under Prospection (86c8cryhk) with prospect info comment + custom field "lien ra" (empty).
-- **Phase 2 (COMPLETE→IN_PROGRESS)**: Admin fills "lien ra" with AR link, attaches snapshot.png + qrcode.png, sets subtask to COMPLETE. Script generates PDF (overlay_pdf), uploads to R2, creates HubSpot note, sets `hs_lead_status=IN_PROGRESS`.
+- **Phase 1 (NEW→OPEN)**: User writes a HubSpot note on the contact with description, client site URL, and image(s), then sets `hs_lead_status=OPEN`. Script parses the note (extracts text, URL, images), creates ClickUp subtask under Prospection (86c8cryhk) with prospect info comment + custom fields "lien ra" and "Titre snapshot" (both empty).
+- **Phase 2 (COMPLETE→IN_PROGRESS)**: Admin fills "lien ra" with AR link, "Titre snapshot" with overlay title, attaches snapshot.png + qrcode.png, sets subtask to COMPLETE. Script generates PDF (overlay_pdf with "Titre snapshot" as title), uploads to R2, creates HubSpot note, sets `hs_lead_status=IN_PROGRESS`.
 
 ## Operating Principles
 

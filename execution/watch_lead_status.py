@@ -435,7 +435,7 @@ def process_completed_subtask(contact: Dict) -> bool:
     if qrcode_url:
         _download_clickup_attachment(qrcode_url, qrcode_path)
 
-    # --- 2. Get AR link from "lien ra" custom field ---
+    # --- 2. Get AR link and snapshot title from custom fields ---
     lead_url = get_custom_field_value(task, "lien ra")
     if not lead_url:
         logger.error(f"  ❌ 'lien ra' custom field is empty on subtask {subtask_id}")
@@ -443,7 +443,9 @@ def process_completed_subtask(contact: Dict) -> bool:
         _cleanup(snapshot_path, qrcode_path)
         return False
 
+    snapshot_title = get_custom_field_value(task, "Titre snapshot") or contact["contact_name"]
     logger.info(f"  🔗 Lien RA: {lead_url}")
+    logger.info(f"  🏷️  Titre snapshot: {snapshot_title}")
 
     # --- 3. Generate PDF via overlay_pdf ---
     try:
@@ -469,7 +471,7 @@ def process_completed_subtask(contact: Dict) -> bool:
             image_path=str(snapshot_path),
             url=lead_url,
             company=company,
-            title=contact["contact_name"],
+            title=snapshot_title,
             image_rect=fitz.Rect(385, 370, 541, 526),
             qr_rect=fitz.Rect(671, 350, 776, 455),
             title_rect=fitz.Rect(388, 318, 538, 345),

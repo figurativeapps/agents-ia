@@ -57,8 +57,9 @@ python execution/create_excel_template.py
 ## Pipeline B : Overlay sur template Canva
 
 ### Inputs requis
-- `image` — Chemin vers l'image à insérer (différente par lead)
+- `image` — Chemin vers l'image snapshot à insérer (différente par lead)
 - `url` — URL dynamique pour le QR code et lien cliquable
+- `title` — Titre affiché au-dessus du snapshot (provient du custom field ClickUp "Titre snapshot")
 - `company` (optionnel) — Nom entreprise pour le fichier output
 
 ### Etape 1 : Preview (positionnement)
