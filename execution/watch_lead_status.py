@@ -57,15 +57,48 @@ def get_hubspot_client() -> HubSpot:
 
 
 # =============================================================================
+# ENSURE CUSTOM PROPERTY EXISTS
+# =============================================================================
+
+PROPERTY_NAME = "clickup_prospection_task_id"
+
+def ensure_custom_property():
+    """Create the clickup_prospection_task_id contact property if it doesn't exist."""
+    client = get_hubspot_client()
+    try:
+        client.crm.properties.core_api.get_by_name(
+            object_type="contacts", property_name=PROPERTY_NAME
+        )
+        logger.info(f"Property '{PROPERTY_NAME}' already exists")
+    except ApiException as e:
+        if e.status == 404:
+            logger.info(f"Creating custom property '{PROPERTY_NAME}'...")
+            from hubspot.crm.properties import PropertyCreate
+            prop = PropertyCreate(
+                name=PROPERTY_NAME,
+                label="ClickUp Prospection Task ID",
+                type="string",
+                field_type="text",
+                group_name="contactinformation",
+                description="ClickUp subtask ID created when lead status changes to OPEN"
+            )
+            client.crm.properties.core_api.create(
+                object_type="contacts", property_create=prop
+            )
+            logger.info(f"✅ Property '{PROPERTY_NAME}' created")
+        else:
+            raise
+
+
+# =============================================================================
 # FIND OPEN LEADS NOT YET SYNCED TO CLICKUP
 # =============================================================================
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def find_open_leads() -> List[Dict]:
     """
-    Search HubSpot for contacts where:
-      - hs_lead_status = OPEN
-      - clickup_prospection_task_id is not set (NOT_HAS_PROPERTY)
+    Search HubSpot for contacts with hs_lead_status = OPEN,
+    then filter out those already processed (clickup_prospection_task_id set).
     """
     client = get_hubspot_client()
 
@@ -76,16 +109,12 @@ def find_open_leads() -> List[Dict]:
                     "propertyName": "hs_lead_status",
                     "operator": "EQ",
                     "value": "OPEN"
-                },
-                {
-                    "propertyName": "clickup_prospection_task_id",
-                    "operator": "NOT_HAS_PROPERTY"
                 }
             ]
         }],
         "properties": [
             "firstname", "lastname", "email", "company",
-            "clickup_prospection_task_id"
+            PROPERTY_NAME
         ],
         "limit": 100
     }
@@ -101,6 +130,9 @@ def find_open_leads() -> List[Dict]:
     leads = []
     for contact in results.results:
         props = contact.properties
+        if props.get(PROPERTY_NAME):
+            continue
+
         firstname = props.get("firstname", "") or ""
         lastname = props.get("lastname", "") or ""
         contact_name = f"{firstname} {lastname}".strip() or props.get("email", "Sans nom")
@@ -181,6 +213,7 @@ def run_once() -> int:
 def poll(interval_seconds: int = 60):
     """Continuous polling loop."""
     logger.info(f"Starting lead-status watcher (interval: {interval_seconds}s)")
+    ensure_custom_property()
     while True:
         try:
             run_once()
@@ -215,6 +248,8 @@ def main():
         help="Polling interval in seconds (default: 60)"
     )
     args = parser.parse_args()
+
+    ensure_custom_property()
 
     if args.mode == "poll":
         poll(args.interval)
