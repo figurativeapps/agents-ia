@@ -36,6 +36,7 @@ load_dotenv()
 
 from hubspot import HubSpot
 from hubspot.crm.contacts import ApiException
+from hubspot.crm.properties.exceptions import NotFoundException as PropertyNotFoundException
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from clickup_subtask import create_prospection_subtask
@@ -70,24 +71,21 @@ def ensure_custom_property():
             object_type="contacts", property_name=PROPERTY_NAME
         )
         logger.info(f"Property '{PROPERTY_NAME}' already exists")
-    except ApiException as e:
-        if e.status == 404:
-            logger.info(f"Creating custom property '{PROPERTY_NAME}'...")
-            from hubspot.crm.properties import PropertyCreate
-            prop = PropertyCreate(
-                name=PROPERTY_NAME,
-                label="ClickUp Prospection Task ID",
-                type="string",
-                field_type="text",
-                group_name="contactinformation",
-                description="ClickUp subtask ID created when lead status changes to OPEN"
-            )
-            client.crm.properties.core_api.create(
-                object_type="contacts", property_create=prop
-            )
-            logger.info(f"✅ Property '{PROPERTY_NAME}' created")
-        else:
-            raise
+    except PropertyNotFoundException:
+        logger.info(f"Creating custom property '{PROPERTY_NAME}'...")
+        from hubspot.crm.properties import PropertyCreate
+        prop = PropertyCreate(
+            name=PROPERTY_NAME,
+            label="ClickUp Prospection Task ID",
+            type="string",
+            field_type="text",
+            group_name="contactinformation",
+            description="ClickUp subtask ID created when lead status changes to OPEN"
+        )
+        client.crm.properties.core_api.create(
+            object_type="contacts", property_create=prop
+        )
+        logger.info(f"✅ Property '{PROPERTY_NAME}' created")
 
 
 # =============================================================================
