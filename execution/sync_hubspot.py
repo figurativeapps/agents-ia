@@ -9,6 +9,7 @@ Usage:
 import os
 import sys
 import json
+import logging
 import argparse
 from pathlib import Path
 from dotenv import load_dotenv
@@ -29,8 +30,14 @@ if sys.platform == 'win32':
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
+# Logging
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(message)s")
+
 # Load environment variables
 load_dotenv()
+
+# Local imports
+from api_utils import sdk_call_with_retry, save_tracker_snapshot
 
 HUBSPOT_API_KEY = os.getenv('HUBSPOT_API_KEY')
 
@@ -65,7 +72,10 @@ def search_contact_by_email(client, email):
             "properties": ["email", "firstname", "lastname", "phone", "company"]
         }
 
-        results = client.crm.contacts.search_api.do_search(public_object_search_request=search_request)
+        results = sdk_call_with_retry(
+            lambda: client.crm.contacts.search_api.do_search(public_object_search_request=search_request),
+            label="HubSpot contact-search"
+        )
 
         if results.total > 0:
             return results.results[0].id
@@ -114,7 +124,10 @@ def create_or_update_company(client, lead):
             "properties": ["name", "domain"]
         }
 
-        results = client.crm.companies.search_api.do_search(public_object_search_request=search_request)
+        results = sdk_call_with_retry(
+            lambda: client.crm.companies.search_api.do_search(public_object_search_request=search_request),
+            label="HubSpot company-search"
+        )
 
         if results.total > 0:
             # Company exists - update it
@@ -138,7 +151,10 @@ def create_or_update_company(client, lead):
         company_properties = {k: v for k, v in company_properties.items() if v and str(v).strip()}
 
         company_input = CompanyInput(properties=company_properties)
-        company = client.crm.companies.basic_api.create(simple_public_object_input_for_create=company_input)
+        company = sdk_call_with_retry(
+            lambda: client.crm.companies.basic_api.create(simple_public_object_input_for_create=company_input),
+            label="HubSpot company-create"
+        )
 
         print(f"    🏢 Created company: {company_name}")
         return company.id
@@ -173,6 +189,8 @@ def create_contact(client, lead, company_id=None):
         "country": lead.get('Pays', ''),
         "industrie": lead.get('Industrie', ''),  # Custom field in HubSpot
         "hs_linkedin_url": lead.get('LinkedIn_URL', ''),  # HubSpot standard field
+        "lifecyclestage": "lead",
+        "hs_lead_status": "NEW",
     }
 
     # Add new enrichment fields (custom properties in HubSpot)
@@ -202,19 +220,30 @@ def create_contact(client, lead, company_id=None):
 
     try:
         contact_input = SimplePublicObjectInputForCreate(properties=properties)
-        contact = client.crm.contacts.basic_api.create(simple_public_object_input_for_create=contact_input)
+        contact = sdk_call_with_retry(
+            lambda: client.crm.contacts.basic_api.create(simple_public_object_input_for_create=contact_input),
+            label="HubSpot contact-create"
+        )
 
         # Associate with company if company_id exists
         if company_id:
             try:
-                client.crm.contacts.associations_api.create(
-                    contact_id=contact.id,
-                    to_object_type="companies",
-                    to_object_id=company_id,
-                    association_type="contact_to_company"
+                sdk_call_with_retry(
+                    lambda: client.crm.contacts.associations_api.create(
+                        contact_id=contact.id,
+                        to_object_type="companies",
+                        to_object_id=company_id,
+                        association_type="contact_to_company"
+                    ),
+                    label="HubSpot contact-company association"
                 )
-            except:
-                pass  # Association might already exist
+            except Exception as assoc_err:
+                status = getattr(assoc_err, 'status', None)
+                if status != 409:
+                    logging.getLogger(__name__).warning(
+                        "Association error (contact %s → company %s): %s",
+                        contact.id, company_id, str(assoc_err)[:100]
+                    )
 
         print(f"    ✅ Created contact: {email}")
         return contact.id
@@ -273,9 +302,12 @@ def update_contact(client, contact_id, lead):
         return contact_id
 
     try:
-        client.crm.contacts.basic_api.update(
-            contact_id=contact_id,
-            simple_public_object_input={"properties": properties}
+        sdk_call_with_retry(
+            lambda: client.crm.contacts.basic_api.update(
+                contact_id=contact_id,
+                simple_public_object_input={"properties": properties}
+            ),
+            label="HubSpot contact-update"
         )
         print(f"    ♻️  Updated contact")
         return contact_id
@@ -429,6 +461,8 @@ def main():
 
     print(f"\n✅ HubSpot sync complete!")
     print(f"\n💡 Tip: Check your HubSpot CRM to verify the data")
+
+    save_tracker_snapshot("step4_hubspot")
 
 
 if __name__ == '__main__':

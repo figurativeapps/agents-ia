@@ -10,6 +10,7 @@ Usage:
 import os
 import sys
 import json
+import logging
 import requests
 import argparse
 from pathlib import Path
@@ -26,8 +27,14 @@ if sys.platform == 'win32':
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
+# Logging
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(message)s")
+
 # Load environment variables
 load_dotenv()
+
+# Local imports
+from api_utils import call_with_retry, save_tracker_snapshot
 
 MILLIONVERIFIER_API_KEY = os.getenv('MILLIONVERIFIER_API_KEY')
 
@@ -60,7 +67,10 @@ def verify_single_email(email):
             'email': email
         }
 
-        response = requests.get(url, params=params, timeout=15)
+        response = call_with_retry(
+            lambda: requests.get(url, params=params, timeout=15),
+            label="MillionVerifier"
+        )
 
         if response.status_code == 200:
             data = response.json()
@@ -191,6 +201,8 @@ def main():
     print(f"\nStep 4b complete")
     print(f"Output: {input_path}")
     print(f"\nNext step: Score leads with score_lead.py")
+
+    save_tracker_snapshot("step3b_verify")
 
 
 if __name__ == '__main__':

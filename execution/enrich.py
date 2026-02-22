@@ -16,6 +16,7 @@ Usage:
 import os
 import sys
 import json
+import logging
 import requests
 import argparse
 import re
@@ -35,8 +36,14 @@ if sys.platform == 'win32':
 from time import sleep
 from urllib.parse import urlparse
 
+# Logging
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(message)s")
+
 # Load environment variables
 load_dotenv()
+
+# Local imports
+from api_utils import call_with_retry, sleep_between_calls, save_tracker_snapshot
 
 SERPER_API_KEY = os.getenv('SERPER_API_KEY')
 HUNTER_API_KEY = os.getenv('HUNTER_API_KEY')
@@ -135,7 +142,10 @@ def step1_osint_serper(company_name):
             'Content-Type': 'application/json'
         }
 
-        response = requests.post(url, headers=headers, data=payload, timeout=15)
+        response = call_with_retry(
+            lambda: requests.post(url, headers=headers, data=payload, timeout=15),
+            label="Serper OSINT"
+        )
 
         if response.status_code == 200:
             data = response.json()
@@ -214,7 +224,12 @@ def step3_hunter_pattern(domain):
             'limit': 5
         }
 
-        response = requests.get(url, params=params, timeout=15)
+        response = call_with_retry(
+            lambda: requests.get(url, params=params, timeout=15),
+            label="Hunter domain-search",
+            base_delay=3.0,
+            max_delay=120.0
+        )
 
         if response.status_code == 200:
             data = response.json()
@@ -252,12 +267,8 @@ def step3_hunter_pattern(domain):
                 'confidence': confidence
             }
 
-        elif response.status_code == 429:
-            print(f"    ⚠️  Hunter rate limit reached")
-            return {'pattern': '', 'generic_email': '', 'confidence': 0}
-
         else:
-            print(f"    ❌ Hunter API error: {response.status_code}")
+            print(f"    ❌ Hunter API error after retries: {response.status_code}")
             return {'pattern': '', 'generic_email': '', 'confidence': 0}
 
     except Exception as e:
@@ -288,37 +299,45 @@ def step2_dropcontact(first_name, last_name, company_name, website_url):
     print(f"  Step 2/5: Dropcontact enrichment")
 
     try:
-        response = requests.post(
-            "https://api.dropcontact.io/batch",
-            headers={
-                "X-Access-Token": DROPCONTACT_API_KEY,
-                "Content-Type": "application/json"
-            },
-            json={
-                "data": [{
-                    "first_name": first_name,
-                    "last_name": last_name,
-                    "company": company_name,
-                    "website": website_url
-                }],
-                "siren": True,
-                "language": "fr"
-            },
-            timeout=30
+        response = call_with_retry(
+            lambda: requests.post(
+                "https://api.dropcontact.io/batch",
+                headers={
+                    "X-Access-Token": DROPCONTACT_API_KEY,
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "data": [{
+                        "first_name": first_name,
+                        "last_name": last_name,
+                        "company": company_name,
+                        "website": website_url
+                    }],
+                    "siren": True,
+                    "language": "fr"
+                },
+                timeout=30
+            ),
+            label="Dropcontact batch"
         )
 
         if response.status_code == 200:
             data = response.json()
             request_id = data.get('request_id', '')
 
-            # Dropcontact is async — poll for results (max 30s)
+            # Dropcontact is async — poll for results (max 60s)
+            MAX_POLL_ATTEMPTS = 12
             if request_id:
-                for _ in range(6):  # 6 attempts x 5s = 30s max
+                for attempt_num in range(MAX_POLL_ATTEMPTS):
                     sleep(5)
-                    poll = requests.get(
-                        f"https://api.dropcontact.io/batch/{request_id}",
-                        headers={"X-Access-Token": DROPCONTACT_API_KEY},
-                        timeout=15
+                    poll = call_with_retry(
+                        lambda: requests.get(
+                            f"https://api.dropcontact.io/batch/{request_id}",
+                            headers={"X-Access-Token": DROPCONTACT_API_KEY},
+                            timeout=15
+                        ),
+                        label="Dropcontact poll",
+                        max_retries=2
                     )
                     if poll.status_code == 200:
                         poll_data = poll.json()
@@ -338,6 +357,8 @@ def step2_dropcontact(first_name, last_name, company_name, website_url):
 
                         if not poll_data.get('error') or poll_data.get('success'):
                             break  # Done but no email found
+                else:
+                    print(f"    ⚠️  Dropcontact polling exhausted after {MAX_POLL_ATTEMPTS * 5}s — no result")
 
             print(f"    No email found via Dropcontact")
             return {'email': '', 'source': 'dropcontact_empty'}
@@ -385,11 +406,16 @@ def step4_apollo(first_name, last_name, company_name, domain):
         if first_name and last_name:
             payload["q_keywords"] = f"{first_name} {last_name}"
 
-        response = requests.post(
-            "https://api.apollo.io/v1/mixed_people/search",
-            headers={"Content-Type": "application/json"},
-            json=payload,
-            timeout=15
+        response = call_with_retry(
+            lambda: requests.post(
+                "https://api.apollo.io/v1/mixed_people/search",
+                headers={"Content-Type": "application/json"},
+                json=payload,
+                timeout=15
+            ),
+            label="Apollo people-search",
+            base_delay=5.0,
+            max_delay=120.0
         )
 
         if response.status_code == 200:
@@ -414,12 +440,8 @@ def step4_apollo(first_name, last_name, company_name, domain):
             print(f"    No results in Apollo")
             return {'email': '', 'title': '', 'source': 'apollo_empty'}
 
-        elif response.status_code == 429:
-            print(f"    Apollo rate limit reached")
-            return {'email': '', 'title': '', 'source': 'apollo_rate_limit'}
-
         else:
-            print(f"    Apollo API error: {response.status_code}")
+            print(f"    Apollo API error after retries: {response.status_code}")
             return {'email': '', 'title': '', 'source': 'apollo_error'}
 
     except Exception as e:
@@ -501,7 +523,7 @@ def enrich_lead(company_name, website_url):
     first_name = name_info.get('first_name', '')
     last_name = name_info.get('last_name', '')
 
-    sleep(1)
+    sleep_between_calls(1.0, label="Serper→Dropcontact")
 
     # STEP 2: Dropcontact (if we have a name — cheapest email provider)
     email_found = ''
@@ -517,7 +539,7 @@ def enrich_lead(company_name, website_url):
     hunter_info = {'pattern': '', 'generic_email': '', 'confidence': 0}
     if not email_found and domain:
         hunter_info = step3_hunter_pattern(domain)
-        sleep(1)
+        sleep_between_calls(1.0, label="Hunter→reconstruction")
 
         # Try reconstruction immediately if we have name + pattern
         if hunter_info['pattern'] and first_name and last_name:
@@ -601,7 +623,7 @@ def enrich_leads(input_file):
                 stats['not_found'] += 1
 
             # Rate limiting between companies
-            sleep(1.5)
+            sleep_between_calls(1.5, label="inter-company")
         else:
             print(f"    Skipping (no website)")
             stats['skipped'] += 1
@@ -659,6 +681,8 @@ def main():
     print(f"\nStep 4 complete")
     print(f"Output: {output_path}")
     print(f"\nNext step: Verify emails with verify_email.py")
+
+    save_tracker_snapshot("step3_enrich")
 
 
 if __name__ == '__main__':

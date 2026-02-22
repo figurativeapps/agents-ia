@@ -16,8 +16,13 @@ import subprocess
 import argparse
 import sys
 import os
+import json
 from pathlib import Path
 from datetime import datetime
+
+# Add execution/ to path for api_utils import
+sys.path.insert(0, str(Path(__file__).parent))
+from api_utils import load_and_merge_tracker_snapshots, cleanup_tracker_snapshots
 
 # Fix Windows console encoding issues
 if sys.platform == 'win32':
@@ -70,6 +75,39 @@ def run_command(description, command, critical=True):
             return False
 
 
+def _load_state(state_file, industry, location, max_leads):
+    """Load pipeline state from checkpoint file, or return fresh state."""
+    if state_file.exists():
+        with open(state_file, 'r', encoding='utf-8') as f:
+            s = json.load(f)
+        # Validate state matches current args
+        if (s.get('industry') == industry
+                and s.get('location') == location
+                and s.get('max_leads') == max_leads):
+            return s
+    return {
+        'run_id': datetime.now().strftime('%Y%m%d_%H%M%S'),
+        'industry': industry,
+        'location': location,
+        'max_leads': max_leads,
+        'steps_completed': []
+    }
+
+
+def _save_checkpoint(state_file, state, step_name):
+    """Mark a step as completed in the pipeline state file."""
+    if step_name not in state.get('steps_completed', []):
+        state.setdefault('steps_completed', []).append(step_name)
+    state['last_updated'] = datetime.now().isoformat()
+    with open(state_file, 'w', encoding='utf-8') as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def _is_step_done(state, step_name):
+    """Check if a step was already completed."""
+    return step_name in state.get('steps_completed', [])
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Run complete lead generation pipeline',
@@ -90,6 +128,7 @@ Examples:
     parser.add_argument('--use-excel', action='store_true', help='Use Excel as intermediate step before HubSpot (old workflow)')
     parser.add_argument('--no-backup', action='store_true', help='Skip Excel backup after HubSpot sync (direct mode only)')
     parser.add_argument('--scrape-only', action='store_true', help='Only run scraping (for testing)')
+    parser.add_argument('--resume', action='store_true', help='Resume pipeline from last successful checkpoint')
 
     args = parser.parse_args()
 
@@ -117,53 +156,139 @@ Examples:
     exec_dir = Path(__file__).parent
     project_root = exec_dir.parent
 
+    # Checkpoint setup
+    tmp_dir = project_root / '.tmp'
+    tmp_dir.mkdir(exist_ok=True)
+    state_file = tmp_dir / 'pipeline_state.json'
+
+    if args.resume:
+        state = _load_state(state_file, args.industry, args.location, args.max_leads)
+        completed = state.get('steps_completed', [])
+        if completed:
+            print(f"\n🔄 Resuming pipeline — steps already completed: {', '.join(completed)}")
+        else:
+            print(f"\n🔄 No checkpoint found — starting fresh")
+    else:
+        state = {
+            'run_id': datetime.now().strftime('%Y%m%d_%H%M%S'),
+            'industry': args.industry,
+            'location': args.location,
+            'max_leads': args.max_leads,
+            'steps_completed': []
+        }
+
     # STEP 1: Scrape Google Maps
-    scrape_cmd = f'python "{exec_dir}/scrape_google_maps.py" --industry "{args.industry}" --location "{args.location}" --max_leads {args.max_leads}'
-    run_command("STEP 1: Scraping Google Maps", scrape_cmd, critical=True)
+    STEP1 = "step1_scrape"
+    if args.resume and _is_step_done(state, STEP1):
+        print(f"\n[RESUME] Skipping STEP 1 (already completed)")
+    else:
+        scrape_cmd = f'python "{exec_dir}/scrape_google_maps.py" --industry "{args.industry}" --location "{args.location}" --max_leads {args.max_leads}'
+        if run_command("STEP 1: Scraping Google Maps", scrape_cmd, critical=True):
+            _save_checkpoint(state_file, state, STEP1)
 
     if args.scrape_only:
         print("\n✅ Scraping complete (scrape-only mode)")
         return
 
     # STEP 2: Qualify websites (LLM classification + tech stack detection)
-    qualify_cmd = f'python "{exec_dir}/qualify_site.py" --input "{project_root}/.tmp/google_maps_results.json" --industry "{args.industry}"'
-    run_command("STEP 2: Qualifying Websites (LLM)", qualify_cmd, critical=True)
+    STEP2 = "step2_qualify"
+    if args.resume and _is_step_done(state, STEP2):
+        print(f"\n[RESUME] Skipping STEP 2 (already completed)")
+    else:
+        qualify_cmd = f'python "{exec_dir}/qualify_site.py" --input "{project_root}/.tmp/google_maps_results.json" --industry "{args.industry}"'
+        if run_command("STEP 2: Qualifying Websites (LLM)", qualify_cmd, critical=True):
+            _save_checkpoint(state_file, state, STEP2)
 
     # STEP 3: Enrich contacts (Extended Waterfall: OSINT → Dropcontact → Hunter → Apollo)
-    enrich_cmd = f'python "{exec_dir}/enrich.py" --input "{project_root}/.tmp/qualified_leads.json"'
-    run_command("STEP 3: Enriching Contacts (Waterfall)", enrich_cmd, critical=True)
+    STEP3 = "step3_enrich"
+    if args.resume and _is_step_done(state, STEP3):
+        print(f"\n[RESUME] Skipping STEP 3 (already completed)")
+    else:
+        enrich_cmd = f'python "{exec_dir}/enrich.py" --input "{project_root}/.tmp/qualified_leads.json"'
+        if run_command("STEP 3: Enriching Contacts (Waterfall)", enrich_cmd, critical=True):
+            _save_checkpoint(state_file, state, STEP3)
 
     enriched_path = f"{project_root}/.tmp/enriched_leads.json"
 
     # STEP 3b: Verify emails (MillionVerifier)
-    verify_cmd = f'python "{exec_dir}/verify_email.py" --input "{enriched_path}"'
-    run_command("STEP 3b: Verifying Emails", verify_cmd, critical=False)
+    STEP3B = "step3b_verify"
+    if args.resume and _is_step_done(state, STEP3B):
+        print(f"\n[RESUME] Skipping STEP 3b (already completed)")
+    else:
+        verify_cmd = f'python "{exec_dir}/verify_email.py" --input "{enriched_path}"'
+        if run_command("STEP 3b: Verifying Emails", verify_cmd, critical=False):
+            _save_checkpoint(state_file, state, STEP3B)
 
     # STEP 3c: Score leads (LLM-based ICP scoring)
-    score_cmd = f'python "{exec_dir}/score_lead.py" --input "{enriched_path}" --industry "{args.industry}"'
-    run_command("STEP 3c: Scoring Leads (LLM)", score_cmd, critical=False)
+    STEP3C = "step3c_score"
+    if args.resume and _is_step_done(state, STEP3C):
+        print(f"\n[RESUME] Skipping STEP 3c (already completed)")
+    else:
+        score_cmd = f'python "{exec_dir}/score_lead.py" --input "{enriched_path}" --industry "{args.industry}"'
+        if run_command("STEP 3c: Scoring Leads (LLM)", score_cmd, critical=False):
+            _save_checkpoint(state_file, state, STEP3C)
 
     if args.use_excel:
         # ANCIEN FLOW : Excel puis HubSpot
-        save_cmd = f'python "{exec_dir}/save_to_excel.py" --input "{enriched_path}"'
-        run_command("STEP 4: Saving to Excel Database", save_cmd, critical=True)
+        STEP4 = "step4_excel"
+        if args.resume and _is_step_done(state, STEP4):
+            print(f"\n[RESUME] Skipping STEP 4 (already completed)")
+        else:
+            save_cmd = f'python "{exec_dir}/save_to_excel.py" --input "{enriched_path}"'
+            if run_command("STEP 4: Saving to Excel Database", save_cmd, critical=True):
+                _save_checkpoint(state_file, state, STEP4)
 
         if not args.no_hubspot:
-            hubspot_cmd = f'python "{exec_dir}/sync_hubspot.py" --input "{enriched_path}"'
-            run_command("STEP 5: Syncing to HubSpot CRM", hubspot_cmd, critical=False)
+            STEP5 = "step5_hubspot"
+            if args.resume and _is_step_done(state, STEP5):
+                print(f"\n[RESUME] Skipping STEP 5 (already completed)")
+            else:
+                hubspot_cmd = f'python "{exec_dir}/sync_hubspot.py" --input "{enriched_path}"'
+                if run_command("STEP 5: Syncing to HubSpot CRM", hubspot_cmd, critical=False):
+                    _save_checkpoint(state_file, state, STEP5)
         else:
             print("\n⏭️  Skipping HubSpot sync (--no-hubspot flag)")
     else:
         # NOUVEAU DEFAULT : Direct HubSpot + backup Excel
         if not args.no_hubspot:
-            hubspot_cmd = f'python "{exec_dir}/sync_hubspot.py" --input "{enriched_path}" --write-log'
-            run_command("STEP 4: Syncing directly to HubSpot CRM", hubspot_cmd, critical=False)
+            STEP4 = "step4_hubspot"
+            if args.resume and _is_step_done(state, STEP4):
+                print(f"\n[RESUME] Skipping STEP 4 (already completed)")
+            else:
+                hubspot_cmd = f'python "{exec_dir}/sync_hubspot.py" --input "{enriched_path}" --write-log'
+                if run_command("STEP 4: Syncing directly to HubSpot CRM", hubspot_cmd, critical=False):
+                    _save_checkpoint(state_file, state, STEP4)
 
             if not args.no_backup:
-                backup_cmd = f'python "{exec_dir}/save_to_excel.py" --input "{enriched_path}" --backup-mode'
-                run_command("STEP 5: Excel backup (post-sync)", backup_cmd, critical=False)
+                STEP5 = "step5_backup"
+                if args.resume and _is_step_done(state, STEP5):
+                    print(f"\n[RESUME] Skipping STEP 5 (already completed)")
+                else:
+                    backup_cmd = f'python "{exec_dir}/save_to_excel.py" --input "{enriched_path}" --backup-mode'
+                    if run_command("STEP 5: Excel backup (post-sync)", backup_cmd, critical=False):
+                        _save_checkpoint(state_file, state, STEP5)
         else:
             print("\n⚠️  HubSpot et Excel backup desactives. Donnees enrichies dans .tmp/enriched_leads.json")
+
+    # Generate API diagnostic report
+    try:
+        merged_tracker = load_and_merge_tracker_snapshots()
+        if merged_tracker.calls:
+            report, report_path = merged_tracker.save_report(
+                num_leads=args.max_leads,
+                output_dir=tmp_dir
+            )
+            print(report)
+            print(f"\n📋 Rapport diagnostic sauvegarde : {report_path}")
+
+            # Clean up individual snapshots
+            cleanup_tracker_snapshots()
+    except Exception as e:
+        print(f"\n⚠️  Impossible de generer le rapport diagnostic : {e}")
+
+    # Clean up checkpoint on success
+    if state_file.exists():
+        state_file.unlink()
 
     # Final summary
     end_time = datetime.now()
@@ -181,6 +306,7 @@ Examples:
     print(f"   - Intermediate files: .tmp/")
     if not args.use_excel and not args.no_hubspot:
         print(f"   - Sync log: .tmp/sync_log_*.json")
+    print(f"   - Diagnostic API: .tmp/api_diagnostic.txt")
     print(f"\n💡 Next steps:")
     print(f"   1. Check HubSpot CRM to review leads")
     print(f"   2. Generate PDFs: python execution/generate_pdf.py --company 'Company Name'")

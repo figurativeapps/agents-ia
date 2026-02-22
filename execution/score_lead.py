@@ -15,6 +15,7 @@ Usage:
 import os
 import sys
 import json
+import logging
 import requests
 import argparse
 from pathlib import Path
@@ -31,8 +32,14 @@ if sys.platform == 'win32':
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
+# Logging
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(message)s")
+
 # Load environment variables
 load_dotenv()
+
+# Local imports
+from api_utils import call_with_retry, save_tracker_snapshot
 
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 
@@ -151,19 +158,22 @@ Regles:
 - Cold = score < 40 (donnees insuffisantes ou mauvais fit)"""
 
     try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 250,
-                "messages": [{"role": "user", "content": prompt}]
-            },
-            timeout=30
+        response = call_with_retry(
+            lambda: requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 250,
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=30
+            ),
+            label="Anthropic score"
         )
 
         if response.status_code == 200:
@@ -283,6 +293,8 @@ def main():
     print(f"\nStep 4c complete")
     print(f"Output: {input_path}")
     print(f"\nNext step: Sync to HubSpot with sync_hubspot.py")
+
+    save_tracker_snapshot("step3c_score")
 
 
 if __name__ == '__main__':

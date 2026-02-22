@@ -9,6 +9,7 @@ Usage:
 import os
 import sys
 import json
+import logging
 import requests
 import argparse
 from pathlib import Path
@@ -26,8 +27,14 @@ if sys.platform == 'win32':
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
+# Logging
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(message)s")
+
 # Load environment variables
 load_dotenv()
+
+# Local imports
+from api_utils import call_with_retry, save_tracker_snapshot
 
 SERPER_API_KEY = os.getenv('SERPER_API_KEY')
 
@@ -63,8 +70,15 @@ def search_google_maps(query, location, max_results=50):
     }
 
     try:
-        response = requests.post(url, headers=headers, data=payload, timeout=30)
-        response.raise_for_status()
+        response = call_with_retry(
+            lambda: requests.post(url, headers=headers, data=payload, timeout=30),
+            label="Serper Maps"
+        )
+
+        if response.status_code != 200:
+            print(f"❌ Serper API error: {response.status_code}")
+            return []
+
         data = response.json()
 
         places = data.get('places', [])
@@ -96,7 +110,7 @@ def search_google_maps(query, location, max_results=50):
 
         return leads
 
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         print(f"❌ Error during API request: {e}")
         return []
 
@@ -200,6 +214,8 @@ def main():
         print(f"\n➡️  Next step: Run qualification with qualify_site.py")
     else:
         print("❌ No leads found")
+
+    save_tracker_snapshot("step1_scrape")
 
 
 if __name__ == '__main__':

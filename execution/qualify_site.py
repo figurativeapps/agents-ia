@@ -10,6 +10,7 @@ Usage:
 import os
 import sys
 import json
+import logging
 import requests
 import argparse
 import re
@@ -28,8 +29,14 @@ if sys.platform == 'win32':
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
+# Logging
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(message)s")
+
 # Load environment variables
 load_dotenv()
+
+# Local imports
+from api_utils import call_with_retry, sleep_between_calls, save_tracker_snapshot
 
 FIRECRAWL_API_KEY = os.getenv('FIRECRAWL_API_KEY')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
@@ -99,19 +106,22 @@ Regles de classification:
 - "tech_stack" = plateforme e-commerce detectee dans le contenu (Shopify, WooCommerce, PrestaShop, etc.) ou "unknown" si non detectable"""
 
     try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 300,
-                "messages": [{"role": "user", "content": prompt}]
-            },
-            timeout=30
+        response = call_with_retry(
+            lambda: requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 300,
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=30
+            ),
+            label="Anthropic classify"
         )
 
         if response.status_code == 200:
@@ -238,7 +248,10 @@ def qualify_website(url, industry=''):
             }
         }
 
-        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        response = call_with_retry(
+            lambda: requests.post(api_url, headers=headers, json=payload, timeout=30),
+            label="Firecrawl scrape"
+        )
 
         if response.status_code == 200:
             data = response.json()
@@ -247,6 +260,9 @@ def qualify_website(url, industry=''):
             # Extract emails
             emails = extract_emails(content)
             email = emails[0] if emails else ''
+
+            # Sleep between Firecrawl and Anthropic calls
+            sleep_between_calls(0.5, label="Firecrawl→Anthropic")
 
             # LLM-based classification (with keyword fallback)
             classification = classify_with_llm(content, url, industry)
@@ -383,6 +399,8 @@ def main():
     print(f"\nStep 2 complete")
     print(f"Output: {output_path}")
     print(f"\nNext step: Run enrichment with enrich.py")
+
+    save_tracker_snapshot("step2_qualify")
 
 
 if __name__ == '__main__':
