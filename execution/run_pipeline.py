@@ -125,15 +125,23 @@ Examples:
         print("\n✅ Scraping complete (scrape-only mode)")
         return
 
-    # STEP 2: Qualify websites
-    qualify_cmd = f'python "{exec_dir}/qualify_site.py" --input "{project_root}/.tmp/google_maps_results.json"'
-    run_command("STEP 2: Qualifying Websites", qualify_cmd, critical=True)
+    # STEP 2: Qualify websites (LLM classification + tech stack detection)
+    qualify_cmd = f'python "{exec_dir}/qualify_site.py" --input "{project_root}/.tmp/google_maps_results.json" --industry "{args.industry}"'
+    run_command("STEP 2: Qualifying Websites (LLM)", qualify_cmd, critical=True)
 
-    # STEP 3: Enrich contacts
+    # STEP 3: Enrich contacts (Extended Waterfall: OSINT → Dropcontact → Hunter → Apollo)
     enrich_cmd = f'python "{exec_dir}/enrich.py" --input "{project_root}/.tmp/qualified_leads.json"'
-    run_command("STEP 3: Enriching Contacts", enrich_cmd, critical=True)
+    run_command("STEP 3: Enriching Contacts (Waterfall)", enrich_cmd, critical=True)
 
     enriched_path = f"{project_root}/.tmp/enriched_leads.json"
+
+    # STEP 3b: Verify emails (MillionVerifier)
+    verify_cmd = f'python "{exec_dir}/verify_email.py" --input "{enriched_path}"'
+    run_command("STEP 3b: Verifying Emails", verify_cmd, critical=False)
+
+    # STEP 3c: Score leads (LLM-based ICP scoring)
+    score_cmd = f'python "{exec_dir}/score_lead.py" --input "{enriched_path}" --industry "{args.industry}"'
+    run_command("STEP 3c: Scoring Leads (LLM)", score_cmd, critical=False)
 
     if args.use_excel:
         # ANCIEN FLOW : Excel puis HubSpot

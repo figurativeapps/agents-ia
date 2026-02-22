@@ -175,6 +175,16 @@ def create_contact(client, lead, company_id=None):
         "hs_linkedin_url": lead.get('LinkedIn_URL', ''),  # HubSpot standard field
     }
 
+    # Add new enrichment fields (custom properties in HubSpot)
+    if lead.get('Lead_Score') is not None:
+        properties["lead_score_ai"] = str(lead.get('Lead_Score', 0))
+    if lead.get('Lead_Priority'):
+        properties["lead_priority"] = lead.get('Lead_Priority', '')
+    if lead.get('Tech_Stack') and lead.get('Tech_Stack') != 'unknown':
+        properties["tech_stack"] = lead.get('Tech_Stack', '')
+    if lead.get('Email_Source'):
+        properties["email_source"] = lead.get('Email_Source', '')
+
     # Add name fields if available
     if lead.get('Nom_Decideur'):
         name_parts = lead.get('Nom_Decideur', '').split()
@@ -249,6 +259,14 @@ def update_contact(client, contact_id, lead):
 
     if lead.get('Pays'):
         properties['country'] = lead.get('Pays')
+
+    # New enrichment fields
+    if lead.get('Lead_Score') is not None:
+        properties['lead_score_ai'] = str(lead.get('Lead_Score', 0))
+    if lead.get('Lead_Priority'):
+        properties['lead_priority'] = lead.get('Lead_Priority', '')
+    if lead.get('Tech_Stack') and lead.get('Tech_Stack') != 'unknown':
+        properties['tech_stack'] = lead.get('Tech_Stack', '')
 
     if not properties:
         print(f"    ⏭️  No new data to update")

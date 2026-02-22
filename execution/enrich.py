@@ -1,11 +1,13 @@
 """
-STEP 4: Contact Enrichment with Waterfall Strategy
+STEP 4: Contact Enrichment with Extended Waterfall Strategy
 Uses a multi-stage approach to find decision maker info while minimizing API costs.
 
-Waterfall Strategy:
+Waterfall Strategy (cheapest to most expensive):
 1. OSINT with Serper (Free) - Find LinkedIn profile & name
-2. Pattern Matching with Hunter.io (Freemium) - Get email patterns
-3. Email Reconstruction - Combine data to build email
+2. Dropcontact (Freemium) - GDPR-compliant email finding
+3. Pattern Matching with Hunter.io (Freemium) - Get email patterns
+4. Apollo.io (Free tier) - Contact database lookup
+5. Email Reconstruction - Combine data to build email
 
 Usage:
     python enrich.py --input .tmp/qualified_leads.json
@@ -38,6 +40,8 @@ load_dotenv()
 
 SERPER_API_KEY = os.getenv('SERPER_API_KEY')
 HUNTER_API_KEY = os.getenv('HUNTER_API_KEY')
+DROPCONTACT_API_KEY = os.getenv('DROPCONTACT_API_KEY')
+APOLLO_API_KEY = os.getenv('APOLLO_API_KEY')
 
 
 def extract_domain(url):
@@ -113,7 +117,7 @@ def step1_osint_serper(company_name):
         print(f"    ⚠️  SERPER_API_KEY not configured - skipping OSINT")
         return {'full_name': '', 'first_name': '', 'last_name': '', 'title': '', 'linkedin_url': ''}
 
-    print(f"  🔍 Step 1/3: OSINT via Serper")
+    print(f"  Step 1/5: OSINT via Serper")
 
     # Build search query for LinkedIn profiles
     query = f'site:linkedin.com/in "Directeur" OR "Gérant" OR "CEO" OR "Dirigeant" "{company_name}"'
@@ -179,7 +183,7 @@ def step1_osint_serper(company_name):
         return {'full_name': '', 'first_name': '', 'last_name': '', 'title': '', 'linkedin_url': ''}
 
 
-def step2_hunter_pattern(domain):
+def step3_hunter_pattern(domain):
     """
     STEP 2: Pattern Matching with Hunter.io (Freemium)
     Get email pattern and generic emails from company domain
@@ -199,7 +203,7 @@ def step2_hunter_pattern(domain):
         print(f"    ⚠️  No domain available - skipping Hunter")
         return {'pattern': '', 'generic_email': '', 'confidence': 0}
 
-    print(f"  🔍 Step 2/3: Pattern matching via Hunter.io")
+    print(f"  Step 3/5: Pattern matching via Hunter.io")
 
     try:
         url = f"https://api.hunter.io/v2/domain-search"
@@ -261,7 +265,169 @@ def step2_hunter_pattern(domain):
         return {'pattern': '', 'generic_email': '', 'confidence': 0}
 
 
-def step3_reconstruct_email(name_info, hunter_info, domain):
+def step2_dropcontact(first_name, last_name, company_name, website_url):
+    """
+    STEP 2: Dropcontact enrichment (GDPR-compliant)
+    Finds professional email from name + company.
+
+    Args:
+        first_name: Contact first name
+        last_name: Contact last name
+        company_name: Company name
+        website_url: Company website
+
+    Returns:
+        Dictionary with email and confidence
+    """
+    if not DROPCONTACT_API_KEY:
+        return {'email': '', 'source': 'dropcontact_skipped'}
+
+    if not first_name or not last_name:
+        return {'email': '', 'source': 'dropcontact_no_name'}
+
+    print(f"  Step 2/5: Dropcontact enrichment")
+
+    try:
+        response = requests.post(
+            "https://api.dropcontact.io/batch",
+            headers={
+                "X-Access-Token": DROPCONTACT_API_KEY,
+                "Content-Type": "application/json"
+            },
+            json={
+                "data": [{
+                    "first_name": first_name,
+                    "last_name": last_name,
+                    "company": company_name,
+                    "website": website_url
+                }],
+                "siren": True,
+                "language": "fr"
+            },
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            request_id = data.get('request_id', '')
+
+            # Dropcontact is async — poll for results (max 30s)
+            if request_id:
+                for _ in range(6):  # 6 attempts x 5s = 30s max
+                    sleep(5)
+                    poll = requests.get(
+                        f"https://api.dropcontact.io/batch/{request_id}",
+                        headers={"X-Access-Token": DROPCONTACT_API_KEY},
+                        timeout=15
+                    )
+                    if poll.status_code == 200:
+                        poll_data = poll.json()
+                        if poll_data.get('success') and poll_data.get('data'):
+                            contact = poll_data['data'][0]
+                            email = contact.get('email', [{}])
+                            if isinstance(email, list) and email:
+                                found_email = email[0].get('email', '')
+                            elif isinstance(email, str):
+                                found_email = email
+                            else:
+                                found_email = ''
+
+                            if found_email:
+                                print(f"    Found: {found_email}")
+                                return {'email': found_email, 'source': 'dropcontact'}
+
+                        if not poll_data.get('error') or poll_data.get('success'):
+                            break  # Done but no email found
+
+            print(f"    No email found via Dropcontact")
+            return {'email': '', 'source': 'dropcontact_empty'}
+
+        else:
+            print(f"    Dropcontact API error: {response.status_code}")
+            return {'email': '', 'source': 'dropcontact_error'}
+
+    except Exception as e:
+        print(f"    Dropcontact error: {str(e)[:50]}")
+        return {'email': '', 'source': 'dropcontact_error'}
+
+
+def step4_apollo(first_name, last_name, company_name, domain):
+    """
+    STEP 4: Apollo.io contact lookup
+    Searches Apollo's 275M+ contact database.
+
+    Args:
+        first_name: Contact first name
+        last_name: Contact last name
+        company_name: Company name
+        domain: Company domain
+
+    Returns:
+        Dictionary with email, title, and source
+    """
+    if not APOLLO_API_KEY:
+        return {'email': '', 'title': '', 'source': 'apollo_skipped'}
+
+    print(f"  Step 4/5: Apollo.io lookup")
+
+    try:
+        # Search by domain and person name
+        payload = {
+            "api_key": APOLLO_API_KEY,
+            "q_organization_domains": domain or '',
+            "q_organization_name": company_name,
+            "person_titles": ["CEO", "Directeur", "Gérant", "Founder", "Owner", "Dirigeant", "President"],
+            "page": 1,
+            "per_page": 3
+        }
+
+        # If we have a name, add it to narrow the search
+        if first_name and last_name:
+            payload["q_keywords"] = f"{first_name} {last_name}"
+
+        response = requests.post(
+            "https://api.apollo.io/v1/mixed_people/search",
+            headers={"Content-Type": "application/json"},
+            json=payload,
+            timeout=15
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            people = data.get('people', [])
+
+            if people:
+                person = people[0]
+                email = person.get('email', '')
+                title = person.get('title', '')
+                name = person.get('name', '')
+
+                if email:
+                    print(f"    Found: {email} ({title or name})")
+                    return {
+                        'email': email,
+                        'title': title,
+                        'name': name,
+                        'source': 'apollo'
+                    }
+
+            print(f"    No results in Apollo")
+            return {'email': '', 'title': '', 'source': 'apollo_empty'}
+
+        elif response.status_code == 429:
+            print(f"    Apollo rate limit reached")
+            return {'email': '', 'title': '', 'source': 'apollo_rate_limit'}
+
+        else:
+            print(f"    Apollo API error: {response.status_code}")
+            return {'email': '', 'title': '', 'source': 'apollo_error'}
+
+    except Exception as e:
+        print(f"    Apollo error: {str(e)[:50]}")
+        return {'email': '', 'title': '', 'source': 'apollo_error'}
+
+
+def step5_reconstruct_email(name_info, hunter_info, domain):
     """
     STEP 3: Email Reconstruction (The Synthesis)
     Combine OSINT and Hunter data to build the most likely email
@@ -275,7 +441,7 @@ def step3_reconstruct_email(name_info, hunter_info, domain):
         Dictionary with email and email_source
     """
 
-    print(f"  🔍 Step 3/3: Email reconstruction")
+    print(f"  Step 5/5: Email reconstruction")
 
     first = name_info.get('first_name', '').lower()
     last = name_info.get('last_name', '').lower()
@@ -309,7 +475,15 @@ def step3_reconstruct_email(name_info, hunter_info, domain):
 
 def enrich_lead(company_name, website_url):
     """
-    Main enrichment function using Waterfall strategy
+    Main enrichment function using Extended Waterfall strategy.
+    Tries cheapest sources first, stops as soon as a valid email is found.
+
+    Waterfall order:
+    1. OSINT via Serper (free) → name + LinkedIn
+    2. Dropcontact (GDPR) → email from name+company
+    3. Hunter.io (pattern) → email pattern
+    4. Apollo.io (database) → direct email lookup
+    5. Reconstruction → build email from pattern + name
 
     Args:
         company_name: Name of the company
@@ -322,21 +496,55 @@ def enrich_lead(company_name, website_url):
     # Extract domain
     domain = extract_domain(website_url)
 
-    # STEP 1: OSINT with Serper
+    # STEP 1: OSINT with Serper (always run for name + LinkedIn)
     name_info = step1_osint_serper(company_name)
+    first_name = name_info.get('first_name', '')
+    last_name = name_info.get('last_name', '')
 
-    # STEP 2: Hunter.io pattern matching (only if domain available)
-    hunter_info = step2_hunter_pattern(domain) if domain else {'pattern': '', 'generic_email': '', 'confidence': 0}
-
-    # Rate limiting between API calls
     sleep(1)
 
-    # STEP 3: Email reconstruction
-    email_info = step3_reconstruct_email(name_info, hunter_info, domain)
+    # STEP 2: Dropcontact (if we have a name — cheapest email provider)
+    email_found = ''
+    email_source = 'not_found'
+
+    if first_name and last_name:
+        dc_result = step2_dropcontact(first_name, last_name, company_name, website_url)
+        if dc_result['email']:
+            email_found = dc_result['email']
+            email_source = dc_result['source']
+
+    # STEP 3: Hunter.io pattern (if Dropcontact didn't find email)
+    hunter_info = {'pattern': '', 'generic_email': '', 'confidence': 0}
+    if not email_found and domain:
+        hunter_info = step3_hunter_pattern(domain)
+        sleep(1)
+
+        # Try reconstruction immediately if we have name + pattern
+        if hunter_info['pattern'] and first_name and last_name:
+            recon = step5_reconstruct_email(name_info, hunter_info, domain)
+            if recon['email']:
+                email_found = recon['email']
+                email_source = recon['email_source']
+
+        # Try generic email from Hunter
+        if not email_found and hunter_info['generic_email']:
+            email_found = hunter_info['generic_email']
+            email_source = 'hunter_generic'
+
+    # STEP 4: Apollo.io (if still no email)
+    if not email_found:
+        apollo_result = step4_apollo(first_name, last_name, company_name, domain)
+        if apollo_result['email']:
+            email_found = apollo_result['email']
+            email_source = apollo_result['source']
+            # Apollo may also provide a better title
+            if apollo_result.get('title') and not name_info.get('title'):
+                name_info['title'] = apollo_result['title']
 
     # Build final result
     result = {
-        'Email_Decideur': email_info['email'],
+        'Email_Decideur': email_found,
+        'Email_Source': email_source,
         'Nom_Decideur': name_info['full_name'],
         'Poste_Decideur': name_info['title'],
         'LinkedIn_URL': name_info['linkedin_url']
@@ -346,18 +554,25 @@ def enrich_lead(company_name, website_url):
 
 
 def enrich_leads(input_file):
-    """Enrich all leads using Waterfall strategy"""
+    """Enrich all leads using Extended Waterfall strategy"""
 
     # Load qualified leads
     with open(input_file, 'r', encoding='utf-8') as f:
         leads = json.load(f)
 
-    print(f"📋 Enriching {len(leads)} leads with Waterfall strategy...\n")
+    print(f"Enriching {len(leads)} leads with Extended Waterfall (5-step)...\n")
 
-    enriched_count = 0
-    reconstructed_count = 0
-    generic_count = 0
-    not_found_count = 0
+    # Track statistics by source
+    stats = {
+        'total': len(leads),
+        'enriched': 0,
+        'dropcontact': 0,
+        'hunter_generic': 0,
+        'reconstructed': 0,
+        'apollo': 0,
+        'not_found': 0,
+        'skipped': 0
+    }
 
     for i, lead in enumerate(leads, 1):
         company_name = lead.get('Nom_Entreprise', '')
@@ -365,21 +580,40 @@ def enrich_leads(input_file):
 
         print(f"[{i}/{len(leads)}] {company_name}")
 
-        # Only enrich if website is active or exists
+        # Only enrich if website exists
         if website_url:
             enrichment = enrich_lead(company_name, website_url)
             lead.update(enrichment)
 
-            # Track statistics
+            # Track statistics by source
+            source = enrichment.get('Email_Source', 'not_found')
             if enrichment['Email_Decideur']:
-                enriched_count += 1
+                stats['enriched'] += 1
+                if source == 'dropcontact':
+                    stats['dropcontact'] += 1
+                elif source == 'hunter_generic':
+                    stats['hunter_generic'] += 1
+                elif source == 'reconstructed':
+                    stats['reconstructed'] += 1
+                elif source == 'apollo':
+                    stats['apollo'] += 1
+            else:
+                stats['not_found'] += 1
 
             # Rate limiting between companies
-            sleep(2)
+            sleep(1.5)
         else:
-            print(f"    ⏭️  Skipping (no website)")
+            print(f"    Skipping (no website)")
+            stats['skipped'] += 1
 
-    print(f"\n✅ Enrichment complete: {enriched_count}/{len(leads)} contacts enriched")
+    print(f"\nEnrichment complete: {stats['enriched']}/{stats['total']} contacts enriched")
+    print(f"  Breakdown by source:")
+    print(f"    Dropcontact: {stats['dropcontact']}")
+    print(f"    Hunter (generic): {stats['hunter_generic']}")
+    print(f"    Hunter (reconstructed): {stats['reconstructed']}")
+    print(f"    Apollo: {stats['apollo']}")
+    print(f"    Not found: {stats['not_found']}")
+    print(f"    Skipped (no website): {stats['skipped']}")
 
     return leads
 
@@ -409,9 +643,11 @@ def main():
         return
 
     # Check API keys
-    print(f"🔑 API Keys status:")
-    print(f"   - SERPER_API_KEY: {'✅ Configured' if SERPER_API_KEY else '❌ Missing'}")
-    print(f"   - HUNTER_API_KEY: {'✅ Configured' if HUNTER_API_KEY else '⚠️  Optional (will skip if missing)'}")
+    print(f"API Keys status:")
+    print(f"   - SERPER_API_KEY: {'Configured' if SERPER_API_KEY else 'Missing'}")
+    print(f"   - DROPCONTACT_API_KEY: {'Configured' if DROPCONTACT_API_KEY else 'Skipped'}")
+    print(f"   - HUNTER_API_KEY: {'Configured' if HUNTER_API_KEY else 'Skipped'}")
+    print(f"   - APOLLO_API_KEY: {'Configured' if APOLLO_API_KEY else 'Skipped'}")
     print()
 
     # Enrich leads
@@ -420,9 +656,9 @@ def main():
     # Save results
     output_path = save_results(enriched_leads)
 
-    print(f"\n✅ Step 4 complete")
-    print(f"📄 Output: {output_path}")
-    print(f"\n➡️  Next step: Save to Excel with save_to_excel.py")
+    print(f"\nStep 4 complete")
+    print(f"Output: {output_path}")
+    print(f"\nNext step: Verify emails with verify_email.py")
 
 
 if __name__ == '__main__':
