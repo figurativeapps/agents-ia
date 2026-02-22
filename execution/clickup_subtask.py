@@ -304,6 +304,9 @@ def get_task_full(task_id: str) -> dict | None:
                 "status": status_name,
                 "status_type": status_type,
                 "attachments": data.get("attachments", []),
+                "description": data.get("description", ""),
+                "markdown_description": data.get("markdown_description", ""),
+                "custom_fields": data.get("custom_fields", []),
                 "url": data.get("url", f"https://app.clickup.com/t/{task_id}"),
             }
         elif response.status_code == 404:
@@ -335,10 +338,48 @@ _URL_RE = re.compile(r'https?://[^\s<>"\')\]]+')
 def extract_url_from_comments(comments: list) -> str | None:
     """Parse comments (newest-first) and return the first http(s) URL found."""
     for comment in comments:
+        # Check plain-text field
         text = comment.get("comment_text", "")
         match = _URL_RE.search(text)
         if match:
             return match.group(0)
+
+        # Check rich-text comment array (ClickUp stores structured content)
+        for part in comment.get("comment", []):
+            part_text = part.get("text", "")
+            match = _URL_RE.search(part_text)
+            if match:
+                return match.group(0)
+    return None
+
+
+def extract_url_from_task(task: dict, comments: list) -> str | None:
+    """
+    Search for a URL across all possible locations in a ClickUp task:
+    1. Comments (plain-text + rich-text)
+    2. Custom fields
+    3. Task description
+    """
+    # 1. Comments
+    url = extract_url_from_comments(comments)
+    if url:
+        return url
+
+    # 2. Custom fields (type "url" or text fields containing URLs)
+    for field in task.get("custom_fields", []):
+        val = field.get("value")
+        if val and isinstance(val, str):
+            match = _URL_RE.search(val)
+            if match:
+                return match.group(0)
+
+    # 3. Description (skip HubSpot contact URLs already in the template)
+    desc = task.get("description", "") or task.get("markdown_description", "")
+    for match in _URL_RE.finditer(desc):
+        candidate = match.group(0)
+        if "hubspot.com" not in candidate and "clickup.com" not in candidate:
+            return candidate
+
     return None
 
 

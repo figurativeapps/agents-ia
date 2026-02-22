@@ -45,7 +45,7 @@ from clickup_subtask import (
     create_prospection_subtask,
     get_task_full,
     get_task_comments,
-    extract_url_from_comments,
+    extract_url_from_task,
     find_attachment_url,
 )
 from upload_files import upload_to_r2, download_file
@@ -276,11 +276,14 @@ def process_completed_subtask(contact: Dict) -> bool:
     if qrcode_url:
         _download_clickup_attachment(qrcode_url, qrcode_path)
 
-    # --- 2. Extract URL from comments ---
+    # --- 2. Extract URL from comments, custom fields, or description ---
     comments = get_task_comments(subtask_id)
-    lead_url = extract_url_from_comments(comments)
+    lead_url = extract_url_from_task(task, comments)
     if not lead_url:
-        logger.error(f"  ❌ No URL found in subtask comments")
+        logger.error(f"  ❌ No URL found in subtask (checked comments, custom fields, description)")
+        logger.error(f"     Comments count: {len(comments)}")
+        logger.error(f"     Custom fields: {[f.get('name') for f in task.get('custom_fields', [])]}")
+        logger.error(f"     Description preview: {(task.get('description', '') or '')[:200]}")
         _cleanup(snapshot_path, qrcode_path)
         return False
 
