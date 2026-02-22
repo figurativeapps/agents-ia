@@ -288,7 +288,7 @@ def get_task_full(task_id: str) -> dict | None:
     """
     Get full task data including status and attachments.
 
-    Returns dict with keys: id, name, status, attachments, url — or None.
+    Returns dict with keys: id, name, status, status_type, attachments, url — or None.
     """
     url = f"{CLICKUP_API_BASE}/task/{task_id}?include_subtasks=false"
     try:
@@ -296,10 +296,13 @@ def get_task_full(task_id: str) -> dict | None:
         if response.status_code == 200:
             data = response.json()
             status_obj = data.get("status", {})
+            status_name = status_obj.get("status", "").lower() if isinstance(status_obj, dict) else str(status_obj).lower()
+            status_type = status_obj.get("type", "").lower() if isinstance(status_obj, dict) else ""
             return {
                 "id": data.get("id"),
                 "name": data.get("name"),
-                "status": status_obj.get("status", "").lower() if isinstance(status_obj, dict) else str(status_obj).lower(),
+                "status": status_name,
+                "status_type": status_type,
                 "attachments": data.get("attachments", []),
                 "url": data.get("url", f"https://app.clickup.com/t/{task_id}"),
             }

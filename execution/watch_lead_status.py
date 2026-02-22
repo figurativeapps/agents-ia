@@ -103,10 +103,12 @@ def ensure_custom_property():
 # =============================================================================
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def find_open_leads() -> List[Dict]:
+def find_all_open_contacts() -> tuple[List[Dict], List[Dict]]:
     """
-    Search HubSpot for contacts with hs_lead_status = OPEN,
-    then filter out those already processed (clickup_prospection_task_id set).
+    Single HubSpot search for all OPEN contacts.
+    Returns (new_leads, pending_completion):
+      - new_leads: no subtask yet → Phase 1
+      - pending_completion: subtask created → Phase 2
     """
     client = get_hubspot_client()
 
@@ -133,28 +135,34 @@ def find_open_leads() -> List[Dict]:
         )
     except ApiException as e:
         logger.error(f"HubSpot search error: {e}")
-        return []
+        return [], []
 
-    leads = []
+    new_leads = []
+    pending_completion = []
+
     for contact in results.results:
         props = contact.properties
-        if props.get(PROPERTY_NAME):
-            continue
-
         firstname = props.get("firstname", "") or ""
         lastname = props.get("lastname", "") or ""
         contact_name = f"{firstname} {lastname}".strip() or props.get("email", "Sans nom")
+        subtask_id = props.get(PROPERTY_NAME)
 
-        leads.append({
+        entry = {
             "contact_id": contact.id,
             "contact_name": contact_name,
             "email": props.get("email", ""),
             "company": props.get("company", ""),
-            "contact_url": f"https://app.hubspot.com/contacts/{HUBSPOT_HUB_ID}/contact/{contact.id}"
-        })
+            "contact_url": f"https://app.hubspot.com/contacts/{HUBSPOT_HUB_ID}/contact/{contact.id}",
+        }
 
-    logger.info(f"Found {len(leads)} OPEN lead(s) not yet in ClickUp")
-    return leads
+        if subtask_id:
+            entry["subtask_id"] = subtask_id
+            pending_completion.append(entry)
+        else:
+            new_leads.append(entry)
+
+    logger.info(f"Found {len(new_leads)} new lead(s), {len(pending_completion)} pending completion")
+    return new_leads, pending_completion
 
 
 # =============================================================================
@@ -206,58 +214,6 @@ def process_lead(lead: Dict) -> bool:
 # PHASE 2 — COMPLETED SUBTASKS → PDF + HUBSPOT NOTE
 # =============================================================================
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def find_pending_completion() -> List[Dict]:
-    """
-    Find contacts whose subtask was created (clickup_prospection_task_id set)
-    but not yet completed (hs_lead_status still OPEN).
-    """
-    client = get_hubspot_client()
-
-    search_request = {
-        "filterGroups": [{
-            "filters": [
-                {"propertyName": "hs_lead_status", "operator": "EQ", "value": "OPEN"},
-                {"propertyName": PROPERTY_NAME, "operator": "HAS_PROPERTY"},
-            ]
-        }],
-        "properties": [
-            "firstname", "lastname", "email", "company", PROPERTY_NAME
-        ],
-        "limit": 100,
-    }
-
-    try:
-        results = client.crm.contacts.search_api.do_search(
-            public_object_search_request=search_request
-        )
-    except ApiException as e:
-        logger.error(f"HubSpot search (pending completion): {e}")
-        return []
-
-    contacts = []
-    for contact in results.results:
-        props = contact.properties
-        subtask_id = props.get(PROPERTY_NAME)
-        if not subtask_id:
-            continue
-
-        firstname = props.get("firstname", "") or ""
-        lastname = props.get("lastname", "") or ""
-        contact_name = f"{firstname} {lastname}".strip() or props.get("email", "Sans nom")
-
-        contacts.append({
-            "contact_id": contact.id,
-            "contact_name": contact_name,
-            "email": props.get("email", ""),
-            "company": props.get("company", ""),
-            "subtask_id": subtask_id,
-            "contact_url": f"https://app.hubspot.com/contacts/{HUBSPOT_HUB_ID}/contact/{contact.id}",
-        })
-
-    return contacts
-
-
 def _download_clickup_attachment(att_url: str, dest: Path) -> bool:
     """Download a ClickUp attachment (requires auth header)."""
     from clickup_subtask import get_headers as clickup_headers
@@ -292,10 +248,14 @@ def process_completed_subtask(contact: Dict) -> bool:
         logger.warning(f"  ⚠️  Subtask {subtask_id} not found in ClickUp")
         return False
 
-    if task["status"] != "complete":
+    status = task["status"]
+    status_type = task.get("status_type", "")
+    is_complete = status in ("complete", "closed", "done") or status_type == "closed"
+    if not is_complete:
+        logger.debug(f"  Subtask {subtask_id} status='{status}' type='{status_type}' (not complete)")
         return False
 
-    logger.info(f"  ✅ Subtask {subtask_id} is complete — processing {contact['contact_name']}")
+    logger.info(f"  ✅ Subtask {subtask_id} is '{status}' — processing {contact['contact_name']}")
 
     # --- 1. Get attachments (snapshot.png, qrcode.png) ---
     snapshot_url = find_attachment_url(task["attachments"], "snapshot.png")
@@ -438,17 +398,17 @@ def _cleanup(*paths):
 
 def run_once() -> int:
     """Single pass: Phase 1 (OPEN → subtask) + Phase 2 (complete → PDF/note)."""
+    new_leads, pending = find_all_open_contacts()
+
     # Phase 1 — new OPEN leads → create ClickUp subtasks
-    leads = find_open_leads()
     created = 0
-    for lead in leads:
+    for lead in new_leads:
         if process_lead(lead):
             created += 1
     if created:
-        logger.info(f"✅ Phase 1: created {created}/{len(leads)} subtask(s)")
+        logger.info(f"✅ Phase 1: created {created}/{len(new_leads)} subtask(s)")
 
     # Phase 2 — completed subtasks → PDF + HubSpot note
-    pending = find_pending_completion()
     completed = 0
     for contact in pending:
         if process_completed_subtask(contact):
