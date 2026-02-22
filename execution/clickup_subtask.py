@@ -30,6 +30,7 @@ load_dotenv()
 
 CLICKUP_API_KEY = os.getenv("CLICKUP_API_KEY")
 CLICKUP_PARENT_TASK_ID = os.getenv("CLICKUP_PARENT_TASK_ID", "86c7r48ha")
+CLICKUP_PROSPECTION_TASK_ID = os.getenv("CLICKUP_PROSPECTION_TASK_ID", "86c8cryhk")
 CLICKUP_ASSIGNEE_ID = os.getenv("CLICKUP_ASSIGNEE_ID", "100557980")  # Yvanol Fotso by default
 CLICKUP_API_BASE = "https://api.clickup.com/api/v2"
 
@@ -200,6 +201,81 @@ def create_subtask(
             "error": str(e),
             "success": False
         }
+
+
+# =============================================================================
+# PROSPECTION SUBTASK
+# =============================================================================
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def create_prospection_subtask(
+    contact_name: str,
+    contact_email: str,
+    company: str,
+    contact_url: str
+) -> dict:
+    """
+    Create a subtask under the Prospection parent task when a lead status
+    changes to OPEN in HubSpot.
+
+    Returns:
+        {"subtask_id": str, "subtask_url": str, "success": bool}
+    """
+    parent_id = CLICKUP_PROSPECTION_TASK_ID
+
+    list_id = get_task_list_id(parent_id)
+    if not list_id:
+        print(f"❌ Could not find list for Prospection task {parent_id}")
+        return {
+            "subtask_id": None,
+            "error": f"Could not find list for parent task {parent_id}",
+            "success": False
+        }
+
+    task_description = f"""**Entreprise** : {company or "(non renseigné)"}
+**Email** : {contact_email}
+**Contact HubSpot** : {contact_url}
+
+---
+*Créé automatiquement — lead passé en OPEN.*"""
+
+    payload = {
+        "name": contact_name,
+        "markdown_description": task_description,
+        "parent": parent_id,
+        "status": "to do",
+        "priority": 3,
+        "assignees": [int(CLICKUP_ASSIGNEE_ID)] if CLICKUP_ASSIGNEE_ID else []
+    }
+
+    url = f"{CLICKUP_API_BASE}/list/{list_id}/task"
+
+    try:
+        response = requests.post(url, headers=get_headers(), json=payload, timeout=30)
+
+        if response.status_code == 200:
+            data = response.json()
+            subtask_id = data.get("id")
+            subtask_url = data.get("url", f"https://app.clickup.com/t/{subtask_id}")
+            print(f"✅ Created prospection subtask: {subtask_id} — {contact_name}")
+            print(f"🔗 URL: {subtask_url}")
+            return {"subtask_id": subtask_id, "subtask_url": subtask_url, "success": True}
+
+        elif response.status_code == 429:
+            print("⚠️  ClickUp API: Rate limit exceeded")
+            raise Exception("Rate limit exceeded")
+
+        else:
+            error_msg = response.text[:200]
+            print(f"❌ ClickUp API error: {response.status_code} - {error_msg}")
+            return {"subtask_id": None, "error": error_msg, "success": False}
+
+    except requests.exceptions.Timeout:
+        print("⚠️  ClickUp API: Request timeout")
+        return {"subtask_id": None, "error": "Timeout", "success": False}
+    except requests.exceptions.RequestException as e:
+        print(f"❌ ClickUp API error: {str(e)[:200]}")
+        return {"subtask_id": None, "error": str(e), "success": False}
 
 
 # =============================================================================

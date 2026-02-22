@@ -24,6 +24,7 @@ Architecture DOE (Directive-Orchestration-Execution) à 3 couches avec 3 workflo
 | `save_to_excel.py` | Save leads to Excel (backup or `--use-excel`) | Data → `Generate_leads.xlsx` |
 | `sync_hubspot.py` | Push leads to HubSpot (direct, default) | JSON → HubSpot CRM + sync log |
 | `sync_from_hubspot.py` | Pull updates from HubSpot (Excel mode only) | HubSpot → Excel |
+| `watch_lead_status.py` | Poll leads OPEN → create ClickUp prospection subtask | HubSpot → ClickUp |
 | `run_pipeline.py` | Master pipeline orchestrator (Mode A) | Args → Full pipeline |
 
 ### Mode B: PDF Generation (PDF_gen)
