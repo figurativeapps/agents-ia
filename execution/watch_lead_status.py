@@ -45,8 +45,8 @@ from clickup_subtask import (
     create_prospection_subtask,
     get_task_full,
     get_task_comments,
-    extract_url_from_task,
     find_attachment_url,
+    get_custom_field_value,
 )
 from upload_files import upload_to_r2, download_file
 from hubspot_ticket import create_note
@@ -73,29 +73,61 @@ def get_hubspot_client() -> HubSpot:
 
 PROPERTY_NAME = "clickup_prospection_task_id"
 
+PROSPECT_PROPERTIES = [
+    {
+        "name": PROPERTY_NAME,
+        "label": "ClickUp Prospection Task ID",
+        "field_type": "text",
+        "description": "ClickUp subtask ID created when lead status changes to OPEN",
+    },
+    {
+        "name": "prospect_objet",
+        "label": "Objet à modéliser",
+        "field_type": "text",
+        "description": "Nom de l'objet à modéliser pour ce prospect",
+    },
+    {
+        "name": "prospect_site_url",
+        "label": "Site web client",
+        "field_type": "text",
+        "description": "URL du site web du client prospect",
+    },
+    {
+        "name": "prospect_description",
+        "label": "Description prospect",
+        "field_type": "textarea",
+        "description": "Description de ce qu'il faut faire pour ce prospect",
+    },
+]
+
+
 def ensure_custom_property():
-    """Create the clickup_prospection_task_id contact property if it doesn't exist."""
+    """Create all prospect-related custom properties if they don't exist."""
     client = get_hubspot_client()
-    try:
-        client.crm.properties.core_api.get_by_name(
-            object_type="contacts", property_name=PROPERTY_NAME
-        )
-        logger.info(f"Property '{PROPERTY_NAME}' already exists")
-    except PropertyNotFoundException:
-        logger.info(f"Creating custom property '{PROPERTY_NAME}'...")
-        from hubspot.crm.properties import PropertyCreate
-        prop = PropertyCreate(
-            name=PROPERTY_NAME,
-            label="ClickUp Prospection Task ID",
-            type="string",
-            field_type="text",
-            group_name="contactinformation",
-            description="ClickUp subtask ID created when lead status changes to OPEN"
-        )
-        client.crm.properties.core_api.create(
-            object_type="contacts", property_create=prop
-        )
-        logger.info(f"✅ Property '{PROPERTY_NAME}' created")
+    from hubspot.crm.properties import PropertyCreate
+
+    for prop_def in PROSPECT_PROPERTIES:
+        name = prop_def["name"]
+        try:
+            client.crm.properties.core_api.get_by_name(
+                object_type="contacts", property_name=name
+            )
+        except PropertyNotFoundException:
+            logger.info(f"Creating property '{name}'...")
+            client.crm.properties.core_api.create(
+                object_type="contacts",
+                property_create=PropertyCreate(
+                    name=name,
+                    label=prop_def["label"],
+                    type="string",
+                    field_type=prop_def["field_type"],
+                    group_name="contactinformation",
+                    description=prop_def["description"],
+                ),
+            )
+            logger.info(f"✅ Property '{name}' created")
+
+    logger.info("All prospect properties verified")
 
 
 # =============================================================================
@@ -124,6 +156,7 @@ def find_all_open_contacts() -> tuple[List[Dict], List[Dict]]:
         }],
         "properties": [
             "firstname", "lastname", "email", "company",
+            "prospect_objet", "prospect_site_url", "prospect_description",
             PROPERTY_NAME
         ],
         "limit": 100
@@ -159,6 +192,11 @@ def find_all_open_contacts() -> tuple[List[Dict], List[Dict]]:
             entry["subtask_id"] = subtask_id
             pending_completion.append(entry)
         else:
+            entry["prospect_info"] = {
+                "objet": props.get("prospect_objet", ""),
+                "site_url": props.get("prospect_site_url", ""),
+                "description": props.get("prospect_description", ""),
+            }
             new_leads.append(entry)
 
     logger.info(f"Found {len(new_leads)} new lead(s), {len(pending_completion)} pending completion")
@@ -189,18 +227,63 @@ def mark_contact_processed(contact_id: str, subtask_id: str) -> bool:
 
 
 # =============================================================================
+# EXTRACT IMAGE URL FROM HUBSPOT NOTES
+# =============================================================================
+
+import re
+
+_IMG_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def get_image_from_notes(contact_id: str) -> str | None:
+    """Get the most recent image URL from notes associated with a contact."""
+    client = get_hubspot_client()
+    try:
+        assoc = client.crm.associations.v4.basic_api.get_page(
+            object_type="contacts",
+            object_id=contact_id,
+            to_object_type="notes",
+            limit=5,
+        )
+        for result in assoc.results:
+            note_id = result.to_object_id
+            try:
+                note = client.crm.objects.notes.basic_api.get_by_id(
+                    note_id=note_id,
+                    properties=["hs_note_body"],
+                )
+                body = note.properties.get("hs_note_body", "") or ""
+                match = _IMG_RE.search(body)
+                if match:
+                    return match.group(1)
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug(f"Could not read notes for contact {contact_id}: {e}")
+    return None
+
+
+# =============================================================================
 # PROCESS A SINGLE LEAD
 # =============================================================================
 
 def process_lead(lead: Dict) -> bool:
-    """Create ClickUp subtask and mark contact as processed."""
+    """Create ClickUp subtask with prospect info and mark contact as processed."""
     logger.info(f"  → Processing: {lead['contact_name']} ({lead['email']})")
+
+    # Enrich prospect info with image from HubSpot note
+    prospect_info = lead.get("prospect_info", {})
+    image_url = get_image_from_notes(lead["contact_id"])
+    if image_url:
+        prospect_info["image_url"] = image_url
+        logger.info(f"  📷 Found image in HubSpot note")
 
     result = create_prospection_subtask(
         contact_name=lead["contact_name"],
         contact_email=lead["email"],
         company=lead["company"],
-        contact_url=lead["contact_url"]
+        contact_url=lead["contact_url"],
+        prospect_info=prospect_info if any(prospect_info.values()) else None,
     )
 
     if not result.get("success"):
@@ -276,18 +359,15 @@ def process_completed_subtask(contact: Dict) -> bool:
     if qrcode_url:
         _download_clickup_attachment(qrcode_url, qrcode_path)
 
-    # --- 2. Extract URL from comments, custom fields, or description ---
-    comments = get_task_comments(subtask_id)
-    lead_url = extract_url_from_task(task, comments)
+    # --- 2. Get AR link from "lien ra" custom field ---
+    lead_url = get_custom_field_value(task, "lien ra")
     if not lead_url:
-        logger.error(f"  ❌ No URL found in subtask (checked comments, custom fields, description)")
-        logger.error(f"     Comments count: {len(comments)}")
-        logger.error(f"     Custom fields: {[f.get('name') for f in task.get('custom_fields', [])]}")
-        logger.error(f"     Description preview: {(task.get('description', '') or '')[:200]}")
+        logger.error(f"  ❌ 'lien ra' custom field is empty on subtask {subtask_id}")
+        logger.error(f"     Custom fields: {[(f.get('name'), f.get('value')) for f in task.get('custom_fields', [])]}")
         _cleanup(snapshot_path, qrcode_path)
         return False
 
-    logger.info(f"  🔗 URL: {lead_url}")
+    logger.info(f"  🔗 Lien RA: {lead_url}")
 
     # --- 3. Generate PDF via overlay_pdf ---
     try:

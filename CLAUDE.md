@@ -24,7 +24,7 @@ Architecture DOE (Directive-Orchestration-Execution) à 3 couches avec 3 workflo
 | `save_to_excel.py` | Save leads to Excel (backup or `--use-excel`) | Data → `Generate_leads.xlsx` |
 | `sync_hubspot.py` | Push leads to HubSpot (direct, default) | JSON → HubSpot CRM + sync log |
 | `sync_from_hubspot.py` | Pull updates from HubSpot (Excel mode only) | HubSpot → Excel |
-| `watch_lead_status.py` | Poll OPEN→subtask + complete→PDF/note/IN_PROGRESS | HubSpot ↔ ClickUp ↔ R2 |
+| `watch_lead_status.py` | Two-phase prospection watcher (see below) | HubSpot ↔ ClickUp ↔ R2 |
 | `run_pipeline.py` | Master pipeline orchestrator (Mode A) | Args → Full pipeline |
 
 ### Mode B: PDF Generation (PDF_gen)
@@ -65,6 +65,13 @@ agents_ia/
 ├── .tmp/                    # Temp files (delete after use)
 └── .env                     # API Keys
 ```
+
+## Prospection Watcher (`watch_lead_status.py`)
+
+Two-phase polling script running on VPS:
+
+- **Phase 1 (NEW→OPEN)**: User fills `prospect_objet`, `prospect_site_url`, `prospect_description` + image note on HubSpot contact, then sets `hs_lead_status=OPEN`. Script creates ClickUp subtask under Prospection (86c8cryhk) with prospect info comment + custom field "lien ra" (empty).
+- **Phase 2 (COMPLETE→IN_PROGRESS)**: Admin fills "lien ra" with AR link, attaches snapshot.png + qrcode.png, sets subtask to COMPLETE. Script generates PDF (overlay_pdf), uploads to R2, creates HubSpot note, sets `hs_lead_status=IN_PROGRESS`.
 
 ## Operating Principles
 

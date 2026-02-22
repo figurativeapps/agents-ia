@@ -205,6 +205,65 @@ def create_subtask(
 
 
 # =============================================================================
+# CLICKUP CUSTOM FIELD "lien ra"
+# =============================================================================
+
+_lien_ra_field_id_cache: str | None = None
+
+
+def ensure_lien_ra_field(list_id: str) -> str | None:
+    """Get or create the 'lien ra' text custom field on the list. Returns field_id."""
+    global _lien_ra_field_id_cache
+    if _lien_ra_field_id_cache:
+        return _lien_ra_field_id_cache
+
+    url = f"{CLICKUP_API_BASE}/list/{list_id}/field"
+    try:
+        resp = requests.get(url, headers=get_headers(), timeout=30)
+        if resp.status_code == 200:
+            for field in resp.json().get("fields", []):
+                if field.get("name", "").lower() == "lien ra":
+                    _lien_ra_field_id_cache = field["id"]
+                    return _lien_ra_field_id_cache
+    except Exception:
+        pass
+
+    # Field doesn't exist — create it
+    try:
+        payload = {"name": "lien ra", "type": "text"}
+        resp = requests.post(url, headers=get_headers(), json=payload, timeout=30)
+        if resp.status_code == 200:
+            _lien_ra_field_id_cache = resp.json().get("id")
+            print(f"✅ Created ClickUp custom field 'lien ra': {_lien_ra_field_id_cache}")
+            return _lien_ra_field_id_cache
+        else:
+            print(f"⚠️  Could not create 'lien ra' field: {resp.status_code} {resp.text[:200]}")
+    except Exception as e:
+        print(f"⚠️  Could not create 'lien ra' field: {e}")
+
+    return None
+
+
+def add_comment_to_task(task_id: str, comment_text: str) -> bool:
+    """Post a markdown comment on a ClickUp task."""
+    url = f"{CLICKUP_API_BASE}/task/{task_id}/comment"
+    payload = {"comment_text": comment_text}
+    try:
+        resp = requests.post(url, headers=get_headers(), json=payload, timeout=30)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def get_custom_field_value(task: dict, field_name: str) -> str | None:
+    """Read a custom field value by name from a task dict."""
+    for field in task.get("custom_fields", []):
+        if (field.get("name") or "").lower() == field_name.lower():
+            return field.get("value") or None
+    return None
+
+
+# =============================================================================
 # PROSPECTION SUBTASK
 # =============================================================================
 
@@ -213,14 +272,15 @@ def create_prospection_subtask(
     contact_name: str,
     contact_email: str,
     company: str,
-    contact_url: str
+    contact_url: str,
+    prospect_info: dict = None,
 ) -> dict:
     """
     Create a subtask under the Prospection parent task when a lead status
     changes to OPEN in HubSpot.
 
-    Returns:
-        {"subtask_id": str, "subtask_url": str, "success": bool}
+    prospect_info (optional): {objet, site_url, description, image_url}
+    Returns: {"subtask_id": str, "subtask_url": str, "success": bool}
     """
     parent_id = CLICKUP_PROSPECTION_TASK_ID
 
@@ -249,6 +309,11 @@ def create_prospection_subtask(
         "assignees": [int(CLICKUP_ASSIGNEE_ID)] if CLICKUP_ASSIGNEE_ID else []
     }
 
+    # Add custom field "lien ra" (empty, for admin to fill later)
+    lien_ra_id = ensure_lien_ra_field(list_id)
+    if lien_ra_id:
+        payload["custom_fields"] = [{"id": lien_ra_id, "value": ""}]
+
     url = f"{CLICKUP_API_BASE}/list/{list_id}/task"
 
     try:
@@ -260,6 +325,18 @@ def create_prospection_subtask(
             subtask_url = data.get("url", f"https://app.clickup.com/t/{subtask_id}")
             print(f"✅ Created prospection subtask: {subtask_id} — {contact_name}")
             print(f"🔗 URL: {subtask_url}")
+
+            # Add prospect info as a comment if available
+            if prospect_info:
+                info = prospect_info
+                comment = f"**Objet à modéliser** : {info.get('objet', '—')}\n"
+                comment += f"**Site client** : {info.get('site_url', '—')}\n"
+                comment += f"**Description** : {info.get('description', '—')}\n"
+                if info.get("image_url"):
+                    comment += f"**Image** : {info['image_url']}\n"
+                add_comment_to_task(subtask_id, comment)
+                print("📝 Added prospect info comment")
+
             return {"subtask_id": subtask_id, "subtask_url": subtask_url, "success": True}
 
         elif response.status_code == 429:
