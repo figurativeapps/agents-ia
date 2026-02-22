@@ -10,6 +10,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import json
 import argparse
@@ -276,6 +277,76 @@ def create_prospection_subtask(
     except requests.exceptions.RequestException as e:
         print(f"❌ ClickUp API error: {str(e)[:200]}")
         return {"subtask_id": None, "error": str(e), "success": False}
+
+
+# =============================================================================
+# TASK INSPECTION (attachments, comments, status)
+# =============================================================================
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def get_task_full(task_id: str) -> dict | None:
+    """
+    Get full task data including status and attachments.
+
+    Returns dict with keys: id, name, status, attachments, url — or None.
+    """
+    url = f"{CLICKUP_API_BASE}/task/{task_id}?include_subtasks=false"
+    try:
+        response = requests.get(url, headers=get_headers(), timeout=30)
+        if response.status_code == 200:
+            data = response.json()
+            status_obj = data.get("status", {})
+            return {
+                "id": data.get("id"),
+                "name": data.get("name"),
+                "status": status_obj.get("status", "").lower() if isinstance(status_obj, dict) else str(status_obj).lower(),
+                "attachments": data.get("attachments", []),
+                "url": data.get("url", f"https://app.clickup.com/t/{task_id}"),
+            }
+        elif response.status_code == 404:
+            return None
+        else:
+            print(f"⚠️  get_task_full error: {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"❌ get_task_full error: {str(e)[:200]}")
+        return None
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def get_task_comments(task_id: str) -> list:
+    """Return the list of comments for a task (newest first)."""
+    url = f"{CLICKUP_API_BASE}/task/{task_id}/comment"
+    try:
+        response = requests.get(url, headers=get_headers(), timeout=30)
+        if response.status_code == 200:
+            return response.json().get("comments", [])
+    except Exception as e:
+        print(f"❌ get_task_comments error: {str(e)[:200]}")
+    return []
+
+
+_URL_RE = re.compile(r'https?://[^\s<>"\')\]]+')
+
+
+def extract_url_from_comments(comments: list) -> str | None:
+    """Parse comments (newest-first) and return the first http(s) URL found."""
+    for comment in comments:
+        text = comment.get("comment_text", "")
+        match = _URL_RE.search(text)
+        if match:
+            return match.group(0)
+    return None
+
+
+def find_attachment_url(attachments: list, filename: str) -> str | None:
+    """Find the download URL of an attachment by filename (case-insensitive)."""
+    target = filename.lower()
+    for att in attachments:
+        att_title = (att.get("title") or att.get("name") or "").lower()
+        if att_title == target or att_title.startswith(target.rsplit(".", 1)[0]):
+            return att.get("url")
+    return None
 
 
 # =============================================================================
