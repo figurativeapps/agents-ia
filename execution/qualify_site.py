@@ -201,16 +201,71 @@ def _fallback_keyword_classification(text, url):
     }
 
 
+CONTACT_PAGE_SUFFIXES = [
+    '/contact', '/nous-contacter', '/contactez-nous',
+    '/mentions-legales', '/a-propos', '/qui-sommes-nous',
+    '/about', '/about-us', '/legal', '/imprint', '/impressum',
+]
+
+
+def _scrape_page(url, headers):
+    """Scrape a single page via Firecrawl (full content, no main-only filter)."""
+    payload = {'url': url}
+    try:
+        resp = call_with_retry(
+            lambda: requests.post(
+                "https://api.firecrawl.dev/v0/scrape",
+                headers=headers, json=payload, timeout=30
+            ),
+            label=f"Firecrawl scrape {url}"
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get('data', {}).get('markdown', '') or data.get('data', {}).get('content', '')
+    except Exception as e:
+        print(f"    Scrape error on {url}: {str(e)[:50]}")
+    return ''
+
+
+def _find_emails_deep(base_url, headers):
+    """
+    Crawl the main page + common contact/legal pages to find emails.
+    Returns all unique emails found across pages.
+    """
+    all_emails = []
+
+    # 1) Scrape homepage (full content including footer)
+    print(f"    Crawling homepage...")
+    homepage_content = _scrape_page(base_url, headers)
+    all_emails.extend(extract_emails(homepage_content))
+
+    if all_emails:
+        return all_emails, homepage_content
+
+    # 2) No emails on homepage — try contact/legal pages
+    from urllib.parse import urlparse
+    parsed = urlparse(base_url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+
+    for suffix in CONTACT_PAGE_SUFFIXES:
+        page_url = base + suffix
+        print(f"    Crawling {page_url}...")
+        content = _scrape_page(page_url, headers)
+        if content:
+            found = extract_emails(content)
+            if found:
+                all_emails.extend(found)
+                homepage_content += '\n' + content
+                break
+        sleep_between_calls(0.5, label="inter-page")
+
+    return list(set(all_emails)), homepage_content
+
+
 def qualify_website(url, industry=''):
     """
-    Use Firecrawl to scrape and LLM to qualify a website
-
-    Args:
-        url: Website URL to qualify
-        industry: Industry context from search query
-
-    Returns:
-        Dictionary with qualification results
+    Use Firecrawl to scrape and LLM to qualify a website.
+    Crawls multiple pages (homepage + contact/legal) to find emails.
     """
 
     if not url or url == '':
@@ -226,68 +281,22 @@ def qualify_website(url, industry=''):
     if not FIRECRAWL_API_KEY:
         raise ValueError("FIRECRAWL_API_KEY not found in .env file")
 
-    # Ensure URL has protocol
     if not url.startswith(('http://', 'https://')):
         url = f'https://{url}'
 
     print(f"  Checking: {url}")
 
     try:
-        # Firecrawl API endpoint
-        api_url = "https://api.firecrawl.dev/v0/scrape"
-
         headers = {
             'Authorization': f'Bearer {FIRECRAWL_API_KEY}',
             'Content-Type': 'application/json'
         }
 
-        payload = {
-            'url': url,
-            'pageOptions': {
-                'onlyMainContent': True
-            }
-        }
+        emails, content = _find_emails_deep(url, headers)
+        email = emails[0] if emails else ''
 
-        response = call_with_retry(
-            lambda: requests.post(api_url, headers=headers, json=payload, timeout=30),
-            label="Firecrawl scrape"
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            content = data.get('data', {}).get('markdown', '') or data.get('data', {}).get('content', '')
-
-            # Extract emails
-            emails = extract_emails(content)
-            email = emails[0] if emails else ''
-
-            # Sleep between Firecrawl and Anthropic calls
-            sleep_between_calls(0.5, label="Firecrawl→Anthropic")
-
-            # LLM-based classification (with keyword fallback)
-            classification = classify_with_llm(content, url, industry)
-
-            ecommerce = classification['ecommerce']
-            business_type = classification['business_type']
-            confidence = classification['confidence']
-            justification = classification['justification']
-            tech_stack = classification['tech_stack']
-
-            print(f"    Active | Email: {email or 'None'} | E-commerce: {ecommerce} | Type: {business_type} ({confidence}%)")
-            if justification:
-                print(f"    Reason: {justification}")
-
-            return {
-                'Email_Generique': email,
-                'Ecommerce': ecommerce,
-                'Business_Type': business_type,
-                'Confidence': confidence,
-                'Justification': justification,
-                'Tech_Stack': tech_stack
-            }
-
-        else:
-            print(f"    Website unreachable (Status: {response.status_code})")
+        if not content:
+            print(f"    Website unreachable")
             return {
                 'Email_Generique': '',
                 'Ecommerce': 'Non',
@@ -296,6 +305,29 @@ def qualify_website(url, industry=''):
                 'Justification': '',
                 'Tech_Stack': 'unknown'
             }
+
+        sleep_between_calls(0.5, label="Firecrawl→Anthropic")
+
+        classification = classify_with_llm(content, url, industry)
+
+        ecommerce = classification['ecommerce']
+        business_type = classification['business_type']
+        confidence = classification['confidence']
+        justification = classification['justification']
+        tech_stack = classification['tech_stack']
+
+        print(f"    Active | Email: {email or 'None'} | E-commerce: {ecommerce} | Type: {business_type} ({confidence}%)")
+        if justification:
+            print(f"    Reason: {justification}")
+
+        return {
+            'Email_Generique': email,
+            'Ecommerce': ecommerce,
+            'Business_Type': business_type,
+            'Confidence': confidence,
+            'Justification': justification,
+            'Tech_Stack': tech_stack
+        }
 
     except Exception as e:
         print(f"    Error: {str(e)[:50]}")

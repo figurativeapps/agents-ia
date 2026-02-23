@@ -497,76 +497,22 @@ def step5_reconstruct_email(name_info, hunter_info, domain):
 
 def enrich_lead(company_name, website_url):
     """
-    Main enrichment function using Extended Waterfall strategy.
-    Tries cheapest sources first, stops as soon as a valid email is found.
-
-    Waterfall order:
-    1. OSINT via Serper (free) → name + LinkedIn
-    2. Dropcontact (GDPR) → email from name+company
-    3. Hunter.io (pattern) → email pattern
-    4. Apollo.io (database) → direct email lookup
-    5. Reconstruction → build email from pattern + name
+    Enrichment function focused on finding decision-maker identity (name, title, LinkedIn).
+    Email is sourced from the website contact page (Email_Generique in qualify step),
+    NOT reconstructed here.
 
     Args:
         company_name: Name of the company
         website_url: Company website URL
 
     Returns:
-        Dictionary with enriched contact data
+        Dictionary with enriched contact data (name, title, LinkedIn)
     """
 
-    # Extract domain
-    domain = extract_domain(website_url)
-
-    # STEP 1: OSINT with Serper (always run for name + LinkedIn)
+    # STEP 1: OSINT with Serper (find decision-maker name + LinkedIn)
     name_info = step1_osint_serper(company_name)
-    first_name = name_info.get('first_name', '')
-    last_name = name_info.get('last_name', '')
 
-    sleep_between_calls(1.0, label="Serper→Dropcontact")
-
-    # STEP 2: Dropcontact (if we have a name — cheapest email provider)
-    email_found = ''
-    email_source = 'not_found'
-
-    if first_name and last_name:
-        dc_result = step2_dropcontact(first_name, last_name, company_name, website_url)
-        if dc_result['email']:
-            email_found = dc_result['email']
-            email_source = dc_result['source']
-
-    # STEP 3: Hunter.io pattern (if Dropcontact didn't find email)
-    hunter_info = {'pattern': '', 'generic_email': '', 'confidence': 0}
-    if not email_found and domain:
-        hunter_info = step3_hunter_pattern(domain)
-        sleep_between_calls(1.0, label="Hunter→reconstruction")
-
-        # Try reconstruction immediately if we have name + pattern
-        if hunter_info['pattern'] and first_name and last_name:
-            recon = step5_reconstruct_email(name_info, hunter_info, domain)
-            if recon['email']:
-                email_found = recon['email']
-                email_source = recon['email_source']
-
-        # Try generic email from Hunter
-        if not email_found and hunter_info['generic_email']:
-            email_found = hunter_info['generic_email']
-            email_source = 'hunter_generic'
-
-    # STEP 4: Apollo.io (if still no email)
-    if not email_found:
-        apollo_result = step4_apollo(first_name, last_name, company_name, domain)
-        if apollo_result['email']:
-            email_found = apollo_result['email']
-            email_source = apollo_result['source']
-            # Apollo may also provide a better title
-            if apollo_result.get('title') and not name_info.get('title'):
-                name_info['title'] = apollo_result['title']
-
-    # Build final result
     result = {
-        'Email_Decideur': email_found,
-        'Email_Source': email_source,
         'Nom_Decideur': name_info['full_name'],
         'Poste_Decideur': name_info['title'],
         'LinkedIn_URL': name_info['linkedin_url']
@@ -584,15 +530,10 @@ def enrich_leads(input_file):
 
     print(f"Enriching {len(leads)} leads with Extended Waterfall (5-step)...\n")
 
-    # Track statistics by source
     stats = {
         'total': len(leads),
-        'enriched': 0,
-        'dropcontact': 0,
-        'hunter_generic': 0,
-        'reconstructed': 0,
-        'apollo': 0,
-        'not_found': 0,
+        'decideur_found': 0,
+        'decideur_not_found': 0,
         'skipped': 0
     }
 
@@ -602,40 +543,24 @@ def enrich_leads(input_file):
 
         print(f"[{i}/{len(leads)}] {company_name}")
 
-        # Only enrich if website exists
         if website_url:
             enrichment = enrich_lead(company_name, website_url)
             lead.update(enrichment)
 
-            # Track statistics by source
-            source = enrichment.get('Email_Source', 'not_found')
-            if enrichment['Email_Decideur']:
-                stats['enriched'] += 1
-                if source == 'dropcontact':
-                    stats['dropcontact'] += 1
-                elif source == 'hunter_generic':
-                    stats['hunter_generic'] += 1
-                elif source == 'reconstructed':
-                    stats['reconstructed'] += 1
-                elif source == 'apollo':
-                    stats['apollo'] += 1
+            if enrichment.get('Nom_Decideur'):
+                stats['decideur_found'] += 1
             else:
-                stats['not_found'] += 1
+                stats['decideur_not_found'] += 1
 
-            # Rate limiting between companies
             sleep_between_calls(1.5, label="inter-company")
         else:
             print(f"    Skipping (no website)")
             stats['skipped'] += 1
 
-    print(f"\nEnrichment complete: {stats['enriched']}/{stats['total']} contacts enriched")
-    print(f"  Breakdown by source:")
-    print(f"    Dropcontact: {stats['dropcontact']}")
-    print(f"    Hunter (generic): {stats['hunter_generic']}")
-    print(f"    Hunter (reconstructed): {stats['reconstructed']}")
-    print(f"    Apollo: {stats['apollo']}")
-    print(f"    Not found: {stats['not_found']}")
-    print(f"    Skipped (no website): {stats['skipped']}")
+    print(f"\nEnrichment complete (OSINT only — name/title/LinkedIn):")
+    print(f"  Decision-maker found: {stats['decideur_found']}/{stats['total']}")
+    print(f"  Not found: {stats['decideur_not_found']}")
+    print(f"  Skipped (no website): {stats['skipped']}")
 
     return leads
 

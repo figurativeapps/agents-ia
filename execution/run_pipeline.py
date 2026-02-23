@@ -210,15 +210,6 @@ Examples:
 
     enriched_path = f"{project_root}/.tmp/enriched_leads.json"
 
-    # STEP 3b: Verify emails (MillionVerifier)
-    STEP3B = "step3b_verify"
-    if args.resume and _is_step_done(state, STEP3B):
-        print(f"\n[RESUME] Skipping STEP 3b (already completed)")
-    else:
-        verify_cmd = f'python "{exec_dir}/verify_email.py" --input "{enriched_path}"'
-        if run_command("STEP 3b: Verifying Emails", verify_cmd, critical=False):
-            _save_checkpoint(state_file, state, STEP3B)
-
     # STEP 3c: Score leads (LLM-based ICP scoring)
     STEP3C = "step3c_score"
     if args.resume and _is_step_done(state, STEP3C):

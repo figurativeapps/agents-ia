@@ -116,43 +116,30 @@ def verify_leads(input_file):
 
     for i, lead in enumerate(leads, 1):
         company = lead.get('Nom_Entreprise', 'Unknown')
-        email_decideur = lead.get('Email_Decideur', '')
-        email_generique = lead.get('Email_Generique', '')
+        email = lead.get('Email_Generique', '')
 
         print(f"[{i}/{len(leads)}] {company}")
 
-        # Verify decision maker email
-        if email_decideur:
-            result = verify_single_email(email_decideur)
-            lead['Email_Decideur_Verified'] = result['is_valid']
-            lead['Email_Decideur_Status'] = result['result']
+        if email:
+            result = verify_single_email(email)
+            lead['Email_Verified'] = result['is_valid']
+            lead['Email_Status'] = result['result']
 
             if result['is_valid']:
                 if result['result'] == 'catch_all':
-                    print(f"    Email decideur: {email_decideur} (catch-all)")
+                    print(f"    Email contact: {email} (catch-all)")
                     catch_all_count += 1
                 else:
-                    print(f"    Email decideur: {email_decideur} (valid)")
+                    print(f"    Email contact: {email} (valid)")
                     valid_count += 1
             else:
-                print(f"    Email decideur: {email_decideur} (INVALID - {result['result']})")
+                print(f"    Email contact: {email} (INVALID - {result['result']})")
                 invalid_count += 1
-                # Clear invalid email to prevent bounce
-                lead['Email_Decideur_Original'] = email_decideur
-                lead['Email_Decideur'] = ''
+                lead['Email_Generique_Original'] = email
+                lead['Email_Generique'] = ''
         else:
             no_email_count += 1
-
-        # Verify generic email (if no decision maker email)
-        if email_generique and not email_decideur:
-            result = verify_single_email(email_generique)
-            lead['Email_Generique_Verified'] = result['is_valid']
-            lead['Email_Generique_Status'] = result['result']
-
-            if not result['is_valid']:
-                print(f"    Email generique: {email_generique} (INVALID)")
-                lead['Email_Generique_Original'] = email_generique
-                lead['Email_Generique'] = ''
+            print(f"    Email contact: Non renseigné")
 
         # Rate limiting
         sleep(0.3)

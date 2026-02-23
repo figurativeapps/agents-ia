@@ -17,9 +17,8 @@ Architecture DOE (Directive-Orchestration-Execution) à 3 couches avec 3 workflo
 | Script | Function | Input → Output |
 |--------|----------|----------------|
 | `scrape_google_maps.py` | Search businesses via Serper | Query → JSON results |
-| `qualify_site.py` | LLM classification + tech stack detection | URL → Type/Ecommerce/TechStack |
-| `enrich.py` | Extended Waterfall (OSINT→Dropcontact→Hunter→Apollo) | Company → Email/Phone/LinkedIn |
-| `verify_email.py` | Email verification via MillionVerifier | Email → Valid/Invalid |
+| `qualify_site.py` | Deep crawl + LLM classification + email extraction | URL → Type/Email/TechStack |
+| `enrich.py` | OSINT via Serper (nom décideur, titre, LinkedIn) | Company → Name/Title/LinkedIn |
 | `score_lead.py` | LLM-based ICP scoring (0-100, Hot/Warm/Cold) | Lead → Score/Priority |
 | `save_to_excel.py` | Save leads to Excel (backup or `--use-excel`) | Data → `Generate_leads.xlsx` |
 | `sync_hubspot.py` | Push leads to HubSpot (direct, default) | JSON → HubSpot CRM + sync log |

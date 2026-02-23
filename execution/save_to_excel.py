@@ -57,11 +57,15 @@ def save_to_excel(leads_data, excel_path):
     # Convert to DataFrame
     new_df = pd.DataFrame(leads_data)
 
+    # Replace empty email with "Non renseigné" for clarity
+    if 'Email_Generique' in new_df.columns:
+        new_df['Email_Generique'] = new_df['Email_Generique'].fillna('').replace('', 'Non renseigné')
+
     # Ensure all expected columns exist
     expected_columns = [
         'Industrie', 'Nom_Entreprise', 'Adresse', 'Ville', 'Code_Postal', 'Pays',
         'Site_Web', 'Tel_Standard', 'Email_Generique',
-        'Email_Decideur', 'Nom_Decideur', 'Poste_Decideur', 'LinkedIn_URL',
+        'Nom_Decideur', 'Poste_Decideur', 'LinkedIn_URL',
         'Ecommerce', 'Date_Ajout', 'Statut_Sync'
     ]
 
@@ -135,8 +139,8 @@ def save_to_excel(leads_data, excel_path):
         # Set column widths
         column_widths = {
             'A': 20, 'B': 30, 'C': 40, 'D': 20, 'E': 12, 'F': 15,
-            'G': 35, 'H': 18, 'I': 30, 'J': 30, 'K': 25,
-            'L': 35, 'M': 35, 'N': 12, 'O': 15, 'P': 15
+            'G': 35, 'H': 18, 'I': 30, 'J': 25, 'K': 20,
+            'L': 35, 'M': 12, 'N': 15, 'O': 15
         }
 
         for col, width in column_widths.items():

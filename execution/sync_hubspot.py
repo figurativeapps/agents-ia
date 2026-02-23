@@ -42,12 +42,6 @@ from api_utils import sdk_call_with_retry, save_tracker_snapshot
 HUBSPOT_API_KEY = os.getenv('HUBSPOT_API_KEY')
 
 CUSTOM_CONTACT_PROPERTIES = [
-    {"name": "lead_score_ai", "label": "Lead Score AI", "type": "number", "fieldType": "number",
-     "groupName": "contactinformation", "description": "AI-generated lead score (0-100)"},
-    {"name": "lead_priority", "label": "Lead Priority", "type": "string", "fieldType": "text",
-     "groupName": "contactinformation", "description": "Lead priority: Hot/Warm/Cold"},
-    {"name": "tech_stack", "label": "Tech Stack", "type": "string", "fieldType": "text",
-     "groupName": "contactinformation", "description": "Detected website tech stack"},
     {"name": "email_source", "label": "Email Source", "type": "string", "fieldType": "text",
      "groupName": "contactinformation", "description": "Source of the email (hunter, apollo, etc.)"},
 ]
@@ -216,7 +210,7 @@ def create_or_update_company(client, lead):
 def create_contact(client, lead, company_id=None):
     """Create new contact in HubSpot (works with or without email)"""
 
-    email = lead.get('Email_Decideur') or lead.get('Email_Generique')
+    email = lead.get('Email_Generique')
 
     # Prepare contact properties - using standard HubSpot properties
     properties = {
@@ -236,13 +230,6 @@ def create_contact(client, lead, company_id=None):
     if email:
         properties["email"] = email
 
-    # Add new enrichment fields (custom properties in HubSpot)
-    if lead.get('Lead_Score') is not None:
-        properties["lead_score_ai"] = str(lead.get('Lead_Score', 0))
-    if lead.get('Lead_Priority'):
-        properties["lead_priority"] = lead.get('Lead_Priority', '')
-    if lead.get('Tech_Stack') and lead.get('Tech_Stack') != 'unknown':
-        properties["tech_stack"] = lead.get('Tech_Stack', '')
     if lead.get('Email_Source'):
         properties["email_source"] = lead.get('Email_Source', '')
 
@@ -332,14 +319,6 @@ def update_contact(client, contact_id, lead):
     if lead.get('Pays'):
         properties['country'] = lead.get('Pays')
 
-    # New enrichment fields
-    if lead.get('Lead_Score') is not None:
-        properties['lead_score_ai'] = str(lead.get('Lead_Score', 0))
-    if lead.get('Lead_Priority'):
-        properties['lead_priority'] = lead.get('Lead_Priority', '')
-    if lead.get('Tech_Stack') and lead.get('Tech_Stack') != 'unknown':
-        properties['tech_stack'] = lead.get('Tech_Stack', '')
-
     if not properties:
         print(f"    ⏭️  No new data to update")
         return contact_id
@@ -370,7 +349,7 @@ def sync_lead_to_hubspot(client, lead):
     """
 
     company_name = lead.get('Nom_Entreprise', 'Unknown')
-    email = lead.get('Email_Decideur') or lead.get('Email_Generique')
+    email = lead.get('Email_Generique')
     sync_status = lead.get('Statut_Sync', 'New')
 
     print(f"  🔄 Syncing: {company_name}")
@@ -443,7 +422,7 @@ def sync_leads(input_file, write_log=False):
         # Collect result for log
         results.append({
             "company": lead.get('Nom_Entreprise', 'Unknown'),
-            "email": lead.get('Email_Decideur') or lead.get('Email_Generique', ''),
+            "email": lead.get('Email_Generique', ''),
             "status": new_status,
             "hubspot_id": str(contact_id) if contact_id else None,
         })
