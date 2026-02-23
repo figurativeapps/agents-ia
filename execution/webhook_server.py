@@ -461,7 +461,7 @@ async def validate_request(payload: ValidationPayload):
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
         
-        ticket_url = f"https://app.hubspot.com/contacts/147476643/ticket/{payload.ticket_id}"
+        ticket_url = f"https://app-eu1.hubspot.com/contacts/147476643/ticket/{payload.ticket_id}"
         
         # Get contact email from ticket
         contact_id = ticket.get("contact_id")

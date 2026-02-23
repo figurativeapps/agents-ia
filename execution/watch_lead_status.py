@@ -185,7 +185,7 @@ def find_all_open_contacts() -> tuple[List[Dict], List[Dict]]:
             "contact_name": contact_name,
             "email": props.get("email", ""),
             "company": props.get("company", ""),
-            "contact_url": f"https://app.hubspot.com/contacts/{HUBSPOT_HUB_ID}/contact/{contact.id}",
+            "contact_url": f"https://app-eu1.hubspot.com/contacts/{HUBSPOT_HUB_ID}/contact/{contact.id}",
         }
 
         if subtask_id:

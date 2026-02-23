@@ -226,7 +226,7 @@ def find_open_ticket(contact_id: str, max_age_days: int = 14) -> dict | None:
                                 
                                 open_tickets.append({
                                     "ticket_id": ticket_id,
-                                    "ticket_url": f"https://app.hubspot.com/contacts/{hub_id}/ticket/{ticket_id}",
+                                    "ticket_url": f"https://app-eu1.hubspot.com/contacts/{hub_id}/ticket/{ticket_id}",
                                     "subject": props.get("subject", ""),
                                     "last_modified": last_modified,
                                     "clickup_subtask_id": props.get("clickup_subtask_id"),
@@ -239,7 +239,7 @@ def find_open_ticket(contact_id: str, max_age_days: int = 14) -> dict | None:
                             
                             open_tickets.append({
                                 "ticket_id": ticket_id,
-                                "ticket_url": f"https://app.hubspot.com/contacts/{hub_id}/ticket/{ticket_id}",
+                                "ticket_url": f"https://app-eu1.hubspot.com/contacts/{hub_id}/ticket/{ticket_id}",
                                 "subject": props.get("subject", ""),
                                 "last_modified": last_modified,
                                 "clickup_subtask_id": props.get("clickup_subtask_id"),
@@ -468,7 +468,7 @@ def create_ticket(
         )
         
         ticket_id = ticket.id
-        ticket_url = f"https://app.hubspot.com/contacts/{hub_id}/ticket/{ticket_id}"
+        ticket_url = f"https://app-eu1.hubspot.com/contacts/{hub_id}/ticket/{ticket_id}"
         
         print(f"✅ Created ticket: {ticket_id}")
         

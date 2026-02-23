@@ -130,7 +130,7 @@ def find_pending_validation_tickets() -> List[Dict]:
                     "credits_estimes": ticket.properties.get("credits_estimes"),
                     "last_modified": ticket.properties.get("hs_lastmodifieddate", ""),
                     "contact_id": contact_id,
-                    "ticket_url": f"https://app.hubspot.com/contacts/{HUBSPOT_HUB_ID}/ticket/{ticket.id}"
+                    "ticket_url": f"https://app-eu1.hubspot.com/contacts/{HUBSPOT_HUB_ID}/ticket/{ticket.id}"
                 })
                 
         except Exception as e:
@@ -226,7 +226,7 @@ def process_validation(ticket_id: str, credits: int) -> Dict:
         logger.warning(f"Could not get contact email: {e}")
         user_email = "unknown@email.com"
     
-    ticket_url = f"https://app.hubspot.com/contacts/{HUBSPOT_HUB_ID}/ticket/{ticket_id}"
+    ticket_url = f"https://app-eu1.hubspot.com/contacts/{HUBSPOT_HUB_ID}/ticket/{ticket_id}"
     
     # Create ClickUp subtask
     subtask_result = create_subtask(
