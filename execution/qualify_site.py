@@ -335,17 +335,14 @@ def process_leads(input_file, industry=''):
         # Update lead with qualification data
         lead.update(qualification)
 
-        # CRITICAL FILTERS: Only keep leads with e-commerce AND manufacturer/seller type
-        ecommerce = qualification.get('Ecommerce')
+        # FILTER: Keep manufacturers/sellers regardless of e-commerce capability
         business_type = qualification.get('Business_Type')
 
-        if ecommerce == 'Oui' and business_type == 'Manufacturer':
+        if business_type == 'Manufacturer':
             qualified_leads.append(lead)
         else:
             filtered_count += 1
-            if ecommerce != 'Oui':
-                print(f"    Filtered out: No e-commerce detected")
-            elif business_type == 'Service':
+            if business_type == 'Service':
                 print(f"    Filtered out: Service provider (not manufacturer)")
             else:
                 print(f"    Filtered out: Business type unclear")
@@ -354,7 +351,7 @@ def process_leads(input_file, industry=''):
         sleep(1)
 
     print(f"\nQualification complete: {len(qualified_leads)}/{len(leads)} manufacturer/seller leads")
-    print(f"Filtered out: {filtered_count} leads (no e-commerce or service providers)")
+    print(f"Filtered out: {filtered_count} leads (service providers or unclear type)")
 
     return qualified_leads
 

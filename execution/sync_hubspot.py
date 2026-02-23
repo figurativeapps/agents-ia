@@ -41,6 +41,17 @@ from api_utils import sdk_call_with_retry, save_tracker_snapshot
 
 HUBSPOT_API_KEY = os.getenv('HUBSPOT_API_KEY')
 
+CUSTOM_CONTACT_PROPERTIES = [
+    {"name": "lead_score_ai", "label": "Lead Score AI", "type": "number", "fieldType": "number",
+     "groupName": "contactinformation", "description": "AI-generated lead score (0-100)"},
+    {"name": "lead_priority", "label": "Lead Priority", "type": "string", "fieldType": "text",
+     "groupName": "contactinformation", "description": "Lead priority: Hot/Warm/Cold"},
+    {"name": "tech_stack", "label": "Tech Stack", "type": "string", "fieldType": "text",
+     "groupName": "contactinformation", "description": "Detected website tech stack"},
+    {"name": "email_source", "label": "Email Source", "type": "string", "fieldType": "text",
+     "groupName": "contactinformation", "description": "Source of the email (hunter, apollo, etc.)"},
+]
+
 
 def init_hubspot_client():
     """Initialize HubSpot API client"""
@@ -48,6 +59,41 @@ def init_hubspot_client():
         raise ValueError("❌ HUBSPOT_API_KEY not found in .env file")
 
     return HubSpot(access_token=HUBSPOT_API_KEY)
+
+
+def ensure_custom_properties(client):
+    """Create custom contact properties in HubSpot if they don't exist."""
+    try:
+        existing = sdk_call_with_retry(
+            lambda: client.crm.properties.core_api.get_all(object_type="contacts"),
+            label="HubSpot get-all-properties"
+        )
+        existing_names = {p.name for p in existing.results}
+    except Exception as e:
+        print(f"  ⚠️  Could not fetch existing properties: {str(e)[:100]}")
+        return
+
+    for prop_def in CUSTOM_CONTACT_PROPERTIES:
+        if prop_def["name"] in existing_names:
+            continue
+        try:
+            sdk_call_with_retry(
+                lambda pd=prop_def: client.crm.properties.core_api.create(
+                    object_type="contacts",
+                    property_create={
+                        "name": pd["name"],
+                        "label": pd["label"],
+                        "type": pd["type"],
+                        "fieldType": pd["fieldType"],
+                        "groupName": pd["groupName"],
+                        "description": pd["description"],
+                    }
+                ),
+                label=f"HubSpot create-property-{prop_def['name']}"
+            )
+            print(f"  ✅ Created HubSpot property: {prop_def['name']}")
+        except Exception as e:
+            print(f"  ⚠️  Could not create property {prop_def['name']}: {str(e)[:100]}")
 
 
 def search_contact_by_email(client, email):
@@ -168,18 +214,12 @@ def create_or_update_company(client, lead):
 
 
 def create_contact(client, lead, company_id=None):
-    """Create new contact in HubSpot"""
+    """Create new contact in HubSpot (works with or without email)"""
 
-    # Use decision maker email if available, otherwise generic email
     email = lead.get('Email_Decideur') or lead.get('Email_Generique')
-
-    if not email:
-        print(f"    ⚠️  No email available - skipping")
-        return None
 
     # Prepare contact properties - using standard HubSpot properties
     properties = {
-        "email": email,
         "phone": lead.get('Tel_Standard', ''),
         "company": lead.get('Nom_Entreprise', ''),
         "website": lead.get('Site_Web', ''),
@@ -187,11 +227,14 @@ def create_contact(client, lead, company_id=None):
         "city": lead.get('Ville', ''),
         "zip": lead.get('Code_Postal', ''),
         "country": lead.get('Pays', ''),
-        "industrie": lead.get('Industrie', ''),  # Custom field in HubSpot
-        "hs_linkedin_url": lead.get('LinkedIn_URL', ''),  # HubSpot standard field
+        "industrie": lead.get('Industrie', ''),
+        "hs_linkedin_url": lead.get('LinkedIn_URL', ''),
         "lifecyclestage": "lead",
         "hs_lead_status": "NEW",
     }
+
+    if email:
+        properties["email"] = email
 
     # Add new enrichment fields (custom properties in HubSpot)
     if lead.get('Lead_Score') is not None:
@@ -340,22 +383,17 @@ def sync_lead_to_hubspot(client, lead):
     # Step 1: Create or get company
     company_id = create_or_update_company(client, lead)
 
-    # Step 2: Check if contact exists
+    # Step 2: Check if contact exists (by email if available)
+    existing_contact_id = None
     if email:
         existing_contact_id = search_contact_by_email(client, email)
 
-        if existing_contact_id:
-            # Update existing contact
-            contact_id = update_contact(client, existing_contact_id, lead)
-            new_status = 'Synced'
-        else:
-            # Create new contact
-            contact_id = create_contact(client, lead, company_id)
-            new_status = 'Synced' if contact_id else 'Failed'
+    if existing_contact_id:
+        contact_id = update_contact(client, existing_contact_id, lead)
+        new_status = 'Synced'
     else:
-        print(f"    ⚠️  No email - skipping contact creation")
-        contact_id = None
-        new_status = 'No Email'
+        contact_id = create_contact(client, lead, company_id)
+        new_status = 'Synced' if contact_id else 'Failed'
 
     return contact_id, new_status
 
@@ -370,6 +408,10 @@ def sync_leads(input_file, write_log=False):
 
     # Initialize HubSpot client
     client = init_hubspot_client()
+
+    # Ensure custom properties exist before syncing
+    print("🔧 Checking custom HubSpot properties...")
+    ensure_custom_properties(client)
 
     # Load leads
     with open(input_file, 'r', encoding='utf-8') as f:

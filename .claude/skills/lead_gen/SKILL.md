@@ -26,7 +26,7 @@ Si l'utilisateur ne fournit pas tous les inputs, les lui demander avant de comme
 - **Input :** `.tmp/google_maps_results.json --industry "{industry}"`
 - **Output :** `.tmp/qualified_leads.json`
 - **Action :** Classification LLM (Manufacturer/Service/Unknown), d\u00e9tection e-commerce, d\u00e9tection tech stack (Shopify, WooCommerce, etc.), extraction emails g\u00e9n\u00e9riques
-- **Filtre :** Garde uniquement Ecommerce=Oui ET Business_Type=Manufacturer
+- **Filtre :** Garde uniquement Business_Type=Manufacturer (e-commerce non requis)
 - **Fallback :** Si ANTHROPIC_API_KEY absent, utilise la classification par keywords
 
 ### Etape 3 : Enrichissement (Waterfall \u00c9tendu)
