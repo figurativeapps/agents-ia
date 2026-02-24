@@ -2,9 +2,9 @@
 HubSpot Conversations - Lecture et envoi d'emails
 Permet à l'IA de communiquer avec les clients via HubSpot.
 
-Approche hybride:
-1. Tente d'utiliser l'API Conversations (si scopes disponibles)
-2. Fallback sur l'API Engagements/Emails
+Approche:
+1. Envoi réel via SMTP (le prospect reçoit l'email)
+2. Consignation dans HubSpot via API Engagements (tracking CRM)
 
 Usage:
     python hubspot_conversation.py --action get_messages --contact-email "user@example.com"
@@ -16,7 +16,10 @@ import os
 import sys
 import json
 import argparse
+import smtplib
 import requests
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from dotenv import load_dotenv
@@ -40,6 +43,58 @@ BASE_URL = "https://api.hubapi.com"
 # Email configuration
 SENDER_EMAIL = os.getenv("HUBSPOT_SENDER_EMAIL", "jordane.pellerin@figurative.fr")
 SENDER_NAME = os.getenv("HUBSPOT_SENDER_NAME", "Figurative Support")
+
+# SMTP configuration for real email delivery
+SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+
+
+def _smtp_configured() -> bool:
+    """Check if SMTP credentials are available."""
+    return bool(SMTP_USER and SMTP_PASSWORD)
+
+
+def _send_smtp_email(to_email: str, subject: str, body_html: str) -> dict:
+    """
+    Send an email via SMTP so the recipient actually receives it.
+    Uses SENDER_EMAIL as From address (should match HubSpot connected email
+    so replies are auto-captured as INCOMING in HubSpot).
+
+    Returns:
+        {"sent": bool, "error": str | None}
+    """
+    if not _smtp_configured():
+        print("⚠️  SMTP not configured (SMTP_USER/SMTP_PASSWORD missing) — email will only be logged in HubSpot")
+        return {"sent": False, "error": "SMTP not configured"}
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = f"{SENDER_NAME} <{SENDER_EMAIL}>"
+        msg["To"] = to_email
+        msg["Reply-To"] = SENDER_EMAIL
+
+        plain_text = body_html.replace("<br>", "\n").replace("<br/>", "\n")
+        plain_text = plain_text.replace("<p>", "").replace("</p>", "\n")
+        plain_text = plain_text.replace("<strong>", "").replace("</strong>", "")
+        plain_text = plain_text.replace("<em>", "").replace("</em>", "")
+
+        msg.attach(MIMEText(plain_text, "plain", "utf-8"))
+        msg.attach(MIMEText(body_html, "html", "utf-8"))
+
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+
+        print(f"✅ SMTP email sent to {to_email}")
+        return {"sent": True, "error": None}
+
+    except Exception as e:
+        print(f"❌ SMTP send failed: {e}")
+        return {"sent": False, "error": str(e)}
 
 
 def get_headers() -> dict:
@@ -332,16 +387,24 @@ def send_email_to_contact(
     ticket_id: Optional[str] = None
 ) -> dict:
     """
-    Send an email to a contact via HubSpot Engagements API.
-    
+    Send an email to a contact: real delivery via SMTP + CRM logging via HubSpot Engagements.
+
+    Flow:
+    1. Resolve contact email from HubSpot
+    2. Send the email via SMTP (actual delivery to inbox)
+    3. Log the email as an Engagement in HubSpot (CRM tracking)
+
+    The SMTP sender address must match the HubSpot-connected mailbox so that
+    prospect replies are automatically captured as INCOMING emails in HubSpot.
+
     Args:
         contact_id: HubSpot contact ID
         subject: Email subject
         body_html: HTML body content
         ticket_id: Optional ticket ID to associate
-    
+
     Returns:
-        {"success": bool, "email_id": str, "error": str}
+        {"success": bool, "email_id": str, "error": str, "smtp_sent": bool}
     """
     try:
         # Get contact email
@@ -351,19 +414,26 @@ def send_email_to_contact(
             params={"properties": "email,firstname,lastname"},
             timeout=10
         )
-        
+
         if contact_response.status_code != 200:
             return {"success": False, "error": "Contact not found"}
-        
+
         contact_data = contact_response.json()
         to_email = contact_data["properties"].get("email")
-        
+
         if not to_email:
             return {"success": False, "error": "Contact has no email"}
-        
-        # Create email engagement
+
+        # --- Step 1: Send the email via SMTP (real delivery) ---
+        smtp_result = _send_smtp_email(to_email, subject, body_html)
+        smtp_sent = smtp_result.get("sent", False)
+
+        if not smtp_sent:
+            print(f"⚠️  SMTP delivery failed — will still log in HubSpot. Reason: {smtp_result.get('error')}")
+
+        # --- Step 2: Log the email as HubSpot Engagement (CRM tracking) ---
         timestamp = int(datetime.now().timestamp() * 1000)
-        
+
         engagement_data = {
             "engagement": {
                 "active": True,
@@ -382,39 +452,44 @@ def send_email_to_contact(
                 "to": [{"email": to_email}],
                 "subject": subject,
                 "html": body_html,
-                "text": body_html.replace("<br>", "\n").replace("<br/>", "\n")  # Simple text version
+                "text": body_html.replace("<br>", "\n").replace("<br/>", "\n")
             }
         }
-        
-        # Add ticket association if provided
+
         if ticket_id:
             engagement_data["associations"]["ticketIds"] = [int(ticket_id)]
-        
+
         response = requests.post(
             f"{BASE_URL}/engagements/v1/engagements",
             headers=get_headers(),
             json=engagement_data,
             timeout=15
         )
-        
+
         if response.status_code in [200, 201]:
             result = response.json()
             email_id = result.get("engagement", {}).get("id")
-            print(f"✅ Email created: {email_id}")
+            print(f"✅ Email logged in HubSpot: {email_id}")
             return {
                 "success": True,
+                "smtp_sent": smtp_sent,
                 "email_id": str(email_id),
                 "to_email": to_email,
                 "subject": subject
             }
         else:
             error_msg = response.text[:200]
-            print(f"❌ Email creation failed: {response.status_code} - {error_msg}")
-            return {"success": False, "error": error_msg}
-        
+            print(f"❌ HubSpot engagement creation failed: {response.status_code} - {error_msg}")
+            return {
+                "success": smtp_sent,
+                "smtp_sent": smtp_sent,
+                "error": f"HubSpot log failed: {error_msg}",
+                "to_email": to_email
+            }
+
     except Exception as e:
         print(f"❌ Error sending email: {e}")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "smtp_sent": False, "error": str(e)}
 
 
 def send_reply_to_ticket(

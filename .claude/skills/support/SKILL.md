@@ -53,7 +53,7 @@ Webhook `POST /webhook/request` avec payload :
 - **Complétude requise :** Au moins 1 fichier visuel + description suffisante
 - **Output :** `credits_estimes`, `completeness`, `missing_info`
 
-### Step 5b : Communication client
+### Step 5b : Communication client (SMTP + HubSpot)
 Selon le résultat de l'analyse :
 
 | Statut | Action | Template |
@@ -61,6 +61,12 @@ Selon le résultat de l'analyse :
 | `pending_info` | Demande incomplète → Email demande d'infos | Template 1 |
 | `pending_credits` | Demande complète → Devis envoyé au client | Template 2 ou 3 selon crédits |
 | `pending_admin` | Cas complexe → Notification admin | Template 4 |
+
+**Envoi email** : `send_email_to_contact()` dans `hubspot_conversation.py` fait 2 choses :
+1. Envoi réel via SMTP (le prospect reçoit l'email dans sa boîte)
+2. Consignation via API Engagements HubSpot (tracking CRM)
+
+L'adresse SMTP (`SMTP_USER`) doit être la même que l'email connecté à HubSpot pour que les réponses du prospect soient auto-capturées comme emails INCOMING.
 
 ### Step 6 : Subtask ClickUp (après validation client)
 - **Condition :** Client a validé le devis
@@ -79,11 +85,25 @@ Selon le résultat de l'analyse :
 
 ## Validation Workflow (polling)
 - **Script :** `execution/validation_workflow.py`
-- **Action :** Surveille les tickets en attente de réponse client
+- **Action :** Surveille les tickets en attente de réponse client (INCOMING emails via HubSpot)
 - **Détection réponses :**
-  - Validation : "Je valide", "OK", "D'accord", "Parfait", "On y va"
-  - Refus : "Je refuse", "Trop cher", "Non merci", "J'annule"
-  - Questions : présence de "?", "Pourquoi", "Comment"
+  - Validation : "Je valide", "OK", "D'accord", "Parfait", "On y va" → `process_validation()` → Crée subtask ClickUp
+  - Refus : "Je refuse", "Trop cher", "Non merci", "J'annule" → `process_rejection()` → Ferme le ticket
+  - Questions : présence de "?", "Pourquoi", "Comment" → Log pour traitement manuel
+  - Info complémentaire (si `pending_info`) → `process_info_response()` → Renvoie un devis
+- **Après validation :** Subtask ClickUp créée + email de confirmation envoyé au prospect
+
+---
+
+## Configuration SMTP (requis pour l'envoi d'emails)
+
+Variables `.env` obligatoires :
+- `SMTP_HOST` : Serveur SMTP (ex: `smtp.gmail.com` pour Google Workspace)
+- `SMTP_PORT` : Port (587 pour STARTTLS)
+- `SMTP_USER` : Adresse email d'envoi (doit être connectée à HubSpot)
+- `SMTP_PASSWORD` : Mot de passe d'application (Google Workspace → App passwords)
+
+Sans SMTP configuré, les emails sont uniquement consignés dans HubSpot mais pas envoyés au prospect.
 
 ---
 
@@ -96,8 +116,14 @@ uvicorn execution.webhook_server:app --host 0.0.0.0 --port 5000
 # Tester le webhook
 python tests/test_webhook_http.py
 
-# Lancer le polling de validation
-python execution/validation_workflow.py
+# Lancer le polling de validation (surveille les réponses clients)
+python execution/validation_workflow.py --mode poll --interval 60
+
+# Vérifier les tickets en attente
+python execution/validation_workflow.py --mode list-pending
+
+# Vérifier un ticket spécifique
+python execution/validation_workflow.py --mode check --ticket-id 123456
 ```
 
 ---
@@ -108,6 +134,8 @@ python execution/validation_workflow.py
 - Upload fichier échoue → Créer ticket sans fichiers, ajouter note
 - HubSpot rate limit → Retry backoff exponentiel (max 3)
 - ClickUp indisponible → Logger, ticket HubSpot reste source de vérité
+- SMTP non configuré → Email consigné dans HubSpot uniquement (warning dans les logs)
+- SMTP échoue → Email quand même consigné dans HubSpot, `smtp_sent: false` dans le retour
 
 ---
 
