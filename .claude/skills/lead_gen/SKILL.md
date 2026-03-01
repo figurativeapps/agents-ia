@@ -95,6 +95,22 @@ python execution/sync_hubspot.py --input .tmp/enriched_leads.json --write-log
 
 ---
 
+## Scripts utilisés
+
+| Script | Function | Input → Output |
+|--------|----------|----------------|
+| `execution/scrape_google_maps.py` | Search businesses via Serper | Query → `.tmp/google_maps_results.json` |
+| `execution/qualify_site.py` | Deep crawl + LLM classification + email extraction | URL → `.tmp/qualified_leads.json` |
+| `execution/enrich.py` | OSINT via Serper (nom décideur, titre, LinkedIn) | Company → `.tmp/enriched_leads.json` |
+| `execution/score_lead.py` | LLM-based ICP scoring (0-100, Hot/Warm/Cold) | Lead data → Score/Priority |
+| `execution/sync_hubspot.py` | Push leads to HubSpot (upsert, default) | JSON → HubSpot CRM + sync log |
+| `execution/save_to_excel.py` | Save leads to Excel (backup or `--use-excel`) | Data → `Generate_leads.xlsx` |
+| `execution/sync_from_hubspot.py` | Pull updates from HubSpot (Excel mode only) | HubSpot → Excel |
+| `execution/watch_lead_status.py` | Two-phase prospection watcher | HubSpot ↔ ClickUp ↔ R2 |
+| `execution/run_pipeline.py` | Master pipeline orchestrator | Args → Full pipeline |
+
+---
+
 ## Garde-fous
 - Ne jamais scraper sans input `industry` + `location`
 - Ne jamais push vers HubSpot sans vérification Upsert

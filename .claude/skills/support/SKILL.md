@@ -139,6 +139,23 @@ python execution/validation_workflow.py --mode check --ticket-id 123456
 
 ---
 
+## Scripts utilisés
+
+| Script | Function | Input → Output |
+|--------|----------|----------------|
+| `execution/webhook_server.py` | Receive requests (FastAPI v3.0) | HTTP → Ticket + Validation |
+| `execution/classify_request.py` | Classify SUPPORT/MODELISATION | Text → Type + Confidence |
+| `execution/analyze_request.py` | Check completeness + estimate credits | Request → Credits + Missing info |
+| `execution/upload_files.py` | Upload files to Cloudflare R2 | Files → Public URLs |
+| `execution/hubspot_ticket.py` | Manage contacts, tickets, notes | Data → HubSpot objects |
+| `execution/hubspot_conversation.py` | Read/send emails via HubSpot + SMTP | Email ↔ HubSpot |
+| `execution/clickup_subtask.py` | Create modeling subtask in ClickUp | Data → ClickUp task |
+| `execution/validation_workflow.py` | Poll pending tickets, process client responses | Tickets → Validation |
+| `execution/send_notification.py` | Email admin notification via SMTP | Data → SMTP |
+| `execution/diagnose_hubspot_properties.py` | Debug HubSpot fields | — |
+
+---
+
 ## Propriétés HubSpot
 - `validation_status` : pending_info | pending_credits | pending_admin | validated | rejected
 - `credits_estimes` : 1 ou 2

@@ -96,6 +96,16 @@ python execution/overlay_pdf.py \
 
 ---
 
+## Scripts utilisés
+
+| Script | Function | Input → Output |
+|--------|----------|----------------|
+| `execution/generate_pdf.py` | Generate PDF from HTML template (WeasyPrint + Jinja2) | Data + Template → `output/*.pdf` |
+| `execution/overlay_pdf.py` | Overlay image + QR code on Canva PDF (PyMuPDF) | Image + URL → PDF |
+| `execution/create_excel_template.py` | Create Excel input template | → Excel template |
+
+---
+
 ## Contrôle qualité
 - Vérifier que tous les placeholders sont remplis (pas de `{{ }}` vides)
 - Vérifier le rendu PDF (pas de texte coupé)
