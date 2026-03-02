@@ -38,7 +38,7 @@ logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(me
 load_dotenv()
 
 # Local imports
-from api_utils import call_with_retry, sleep_between_calls, save_tracker_snapshot
+from api_utils import call_with_retry, sleep_between_calls, save_tracker_snapshot, api_tracker
 
 FIRECRAWL_API_KEY = os.getenv('FIRECRAWL_API_KEY')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
@@ -49,6 +49,11 @@ _print_lock = threading.Lock()
 
 class CrawlError(Exception):
     """Raised when a website crawl fails due to network/API issues (retryable)."""
+    pass
+
+
+class QuotaExhaustedError(Exception):
+    """Raised when an API quota is exhausted (402/403). Not retryable — stops the pipeline."""
     pass
 
 
@@ -162,7 +167,13 @@ Règles:
             logging.warning(f"Anthropic classify returned {resp.status_code}")
             return None
 
-        raw = resp.json()['content'][0]['text'].strip()
+        resp_data = resp.json()
+        usage = resp_data.get('usage', {})
+        api_tracker.record_tokens("Anthropic classify",
+                                  tokens_in=usage.get('input_tokens', 0),
+                                  tokens_out=usage.get('output_tokens', 0))
+
+        raw = resp_data['content'][0]['text'].strip()
         raw = re.sub(r'^```json\s*', '', raw)
         raw = re.sub(r'\s*```$', '', raw)
         result = json.loads(raw)
@@ -186,7 +197,7 @@ CONTACT_PAGE_SUFFIXES = [
 ]
 
 
-FIRECRAWL_DELAY = 13  # 5 req/min free tier → 12s minimum, +1s safety margin
+FIRECRAWL_DELAY = 4  # 16 req/min Hobby tier → 3.75s minimum, +0.25s safety
 FIRECRAWL_API_URL = "https://api.firecrawl.dev/v1/scrape"
 
 def _scrape_page(url, headers):
@@ -208,7 +219,11 @@ def _scrape_page(url, headers):
         if resp.status_code == 200:
             data = resp.json()
             return data.get('data', {}).get('markdown', '')
-        raise CrawlError(f"Firecrawl returned {resp.status_code} for {url}")
+        if resp.status_code in (402, 403):
+            raise QuotaExhaustedError(
+                f"Firecrawl quota exhausted (HTTP {resp.status_code}). "
+                f"Free tier: 500 credits/month. Upgrade: https://firecrawl.dev/pricing"
+            )
     except CrawlError:
         raise
     except Exception as e:
@@ -398,9 +413,19 @@ def process_leads(input_file, workers=3, industry=''):
     filtered_count = 0
     error_count = 0
 
+    quota_hit = False
+
     if workers <= 1:
         for i, lead in enumerate(leads, 1):
-            lead, is_qualified, reason = _qualify_single_lead(i, lead, total, industry=industry)
+            try:
+                lead, is_qualified, reason = _qualify_single_lead(i, lead, total, industry=industry)
+            except QuotaExhaustedError as e:
+                print(f"\n{'!'*60}")
+                print(f"  RATE LIMIT ATTEINT : Firecrawl quota exhausted")
+                print(f"  {e}")
+                print(f"{'!'*60}")
+                quota_hit = True
+                break
             if is_qualified:
                 qualified_leads.append(lead)
             else:
@@ -415,7 +440,17 @@ def process_leads(input_file, workers=3, industry=''):
                 futures[future] = i
 
             for future in as_completed(futures):
-                lead, is_qualified, reason = future.result()
+                try:
+                    lead, is_qualified, reason = future.result()
+                except QuotaExhaustedError as e:
+                    print(f"\n{'!'*60}")
+                    print(f"  RATE LIMIT ATTEINT : Firecrawl quota exhausted")
+                    print(f"  {e}")
+                    print(f"{'!'*60}")
+                    quota_hit = True
+                    for f in futures:
+                        f.cancel()
+                    break
                 if is_qualified:
                     qualified_leads.append(lead)
                 else:
@@ -423,8 +458,14 @@ def process_leads(input_file, workers=3, industry=''):
                     if lead.get('Justification', '').startswith('Crawl error'):
                         error_count += 1
 
-    print(f"\nQualification complete: {len(qualified_leads)}/{total} manufacturer/seller leads")
-    print(f"Filtered out: {filtered_count} leads ({error_count} crawl errors, {filtered_count - error_count} service/unclear)")
+    if quota_hit:
+        processed = len(qualified_leads) + filtered_count
+        print(f"\n⚠️  Qualification STOPPED: Firecrawl quota exhausted after {processed}/{total} leads")
+        print(f"  Qualified so far: {len(qualified_leads)} leads")
+        print(f"  Upgrade at https://firecrawl.dev/pricing ($16/month for 3,000 credits)")
+    else:
+        print(f"\nQualification complete: {len(qualified_leads)}/{total} manufacturer/seller leads")
+        print(f"Filtered out: {filtered_count} leads ({error_count} crawl errors, {filtered_count - error_count} service/unclear)")
 
     return qualified_leads
 

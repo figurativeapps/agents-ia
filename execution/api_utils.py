@@ -52,15 +52,14 @@ API_LIMITS = {
         "shared_with": "Serper Maps",
     },
     "Firecrawl scrape": {
-        "monthly_quota": 500,
-        "rate_per_minute": 5,
+        "monthly_quota": 3000,
+        "rate_per_minute": 16,
         "cost_per_unit": "page scrapee",
-        "free_tier": True,
+        "free_tier": False,
         "upgrade_url": "https://firecrawl.dev/pricing",
-        "upgrade_price": "$16/mois pour 3 000 credits",
-        "wait_recommendation": "12s entre chaque appel (5 req/min free tier)",
-        "ideal_batch": 30,
-        "bottleneck": True,
+        "upgrade_price": "$16/mois — plan Hobby (3 000 credits)",
+        "wait_recommendation": "4s entre chaque appel (16 req/min Hobby)",
+        "ideal_batch": 100,
     },
     "Anthropic classify": {
         "monthly_quota": None,  # Pay per token
@@ -158,48 +157,82 @@ for hs_tool in ["HubSpot company-search", "HubSpot company-create",
     API_LIMITS[hs_tool] = API_LIMITS["HubSpot contact-search"].copy()
 
 
+ANTHROPIC_PRICING = {"input_per_mtok": 1.00, "output_per_mtok": 5.00}
+
+_EMPTY_ENTRY = {
+    "total": 0, "success": 0, "rate_limited": 0,
+    "server_errors": 0, "client_errors": 0, "network_errors": 0,
+    "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0,
+    "first_429_at": None, "last_429_at": None,
+}
+
+
 class APITracker:
-    """Tracks API calls, successes, 429s, errors across the pipeline. Thread-safe."""
+    """Tracks API calls, successes, 429s, errors, and cost across the pipeline. Thread-safe."""
 
     def __init__(self):
-        self.calls = {}  # label -> {total, success, rate_limited, errors, first_429_at}
+        self.calls = {}
         self._lock = threading.Lock()
+        self._unflushed = {}  # delta since last flush
+        self._flusher = None
 
-    def record(self, label, status_code=200, is_retry=False):
-        """Record an API call result (thread-safe)."""
+    def record(self, label, status_code=200, is_retry=False,
+               tokens_in=0, tokens_out=0):
+        """Record an API call result (thread-safe). Optionally tracks token usage/cost."""
         with self._lock:
-            self._record_unlocked(label, status_code, is_retry)
+            self._record_unlocked(label, status_code, is_retry,
+                                  tokens_in, tokens_out)
+        _ensure_flusher(self)
 
-    def _record_unlocked(self, label, status_code=200, is_retry=False):
+    def _record_unlocked(self, label, status_code=200, is_retry=False,
+                         tokens_in=0, tokens_out=0):
         if label not in self.calls:
-            self.calls[label] = {
-                "total": 0,
-                "success": 0,
-                "rate_limited": 0,
-                "server_errors": 0,
-                "client_errors": 0,
-                "network_errors": 0,
-                "first_429_at": None,
-                "last_429_at": None,
-            }
+            self.calls[label] = _EMPTY_ENTRY.copy()
+        if label not in self._unflushed:
+            self._unflushed[label] = _EMPTY_ENTRY.copy()
 
-        entry = self.calls[label]
-        entry["total"] += 1
+        for store in (self.calls[label], self._unflushed[label]):
+            store["total"] += 1
 
-        if status_code == 200:
-            entry["success"] += 1
-        elif status_code == 429:
-            entry["rate_limited"] += 1
-            now = datetime.now().isoformat()
-            if not entry["first_429_at"]:
-                entry["first_429_at"] = now
-            entry["last_429_at"] = now
-        elif 500 <= status_code < 600:
-            entry["server_errors"] += 1
-        elif status_code == -1:  # Network error
-            entry["network_errors"] += 1
-        elif 400 <= status_code < 500:
-            entry["client_errors"] += 1
+            if status_code == 200:
+                store["success"] += 1
+            elif status_code == 429:
+                store["rate_limited"] += 1
+                now = datetime.now().isoformat()
+                if not store["first_429_at"]:
+                    store["first_429_at"] = now
+                store["last_429_at"] = now
+            elif 500 <= status_code < 600:
+                store["server_errors"] += 1
+            elif status_code == -1:
+                store["network_errors"] += 1
+            elif 400 <= status_code < 500:
+                store["client_errors"] += 1
+
+            store["tokens_in"] += tokens_in
+            store["tokens_out"] += tokens_out
+            cost = (tokens_in / 1_000_000 * ANTHROPIC_PRICING["input_per_mtok"]
+                    + tokens_out / 1_000_000 * ANTHROPIC_PRICING["output_per_mtok"])
+            store["cost_usd"] = round(store["cost_usd"] + cost, 6)
+
+    def record_tokens(self, label, tokens_in=0, tokens_out=0):
+        """Record token usage and cost for an already-tracked call (no call count increment)."""
+        with self._lock:
+            for store in (self.calls, self._unflushed):
+                if label not in store:
+                    store[label] = _EMPTY_ENTRY.copy()
+                store[label]["tokens_in"] += tokens_in
+                store[label]["tokens_out"] += tokens_out
+                cost = (tokens_in / 1_000_000 * ANTHROPIC_PRICING["input_per_mtok"]
+                        + tokens_out / 1_000_000 * ANTHROPIC_PRICING["output_per_mtok"])
+                store[label]["cost_usd"] = round(store[label]["cost_usd"] + cost, 6)
+
+    def take_unflushed(self):
+        """Return and reset the unflushed delta (thread-safe)."""
+        with self._lock:
+            delta = self._unflushed
+            self._unflushed = {}
+            return delta
 
     def has_issues(self):
         """Check if any API had rate limits or errors."""
@@ -378,6 +411,32 @@ class APITracker:
         return report, report_path
 
 
+class _AutoFlusher(threading.Thread):
+    """Daemon thread that periodically flushes tracker delta to the monthly usage file."""
+
+    def __init__(self, tracker, interval=60):
+        super().__init__(daemon=True)
+        self.tracker = tracker
+        self.interval = interval
+
+    def run(self):
+        while True:
+            time.sleep(self.interval)
+            try:
+                delta = self.tracker.take_unflushed()
+                if delta:
+                    _persist_monthly_usage(delta)
+            except Exception:
+                pass
+
+
+def _ensure_flusher(tracker):
+    """Start the auto-flusher thread if not already running."""
+    if tracker._flusher is None or not tracker._flusher.is_alive():
+        tracker._flusher = _AutoFlusher(tracker)
+        tracker._flusher.start()
+
+
 # Global singleton tracker
 api_tracker = APITracker()
 
@@ -406,10 +465,9 @@ def save_tracker_snapshot(step_name):
     for label in all_labels:
         old = existing.get(label, {})
         new = current_calls.get(label, {})
-        merged_calls[label] = {}
-        for key in ['total', 'success', 'rate_limited', 'server_errors',
-                     'client_errors', 'network_errors']:
-            merged_calls[label][key] = old.get(key, 0) + new.get(key, 0)
+        merged_calls[label] = _EMPTY_ENTRY.copy()
+        for key in _ADDITIVE_KEYS:
+            merged_calls[label][key] = round(old.get(key, 0) + new.get(key, 0), 6)
         merged_calls[label]['first_429_at'] = old.get('first_429_at') or new.get('first_429_at')
         merged_calls[label]['last_429_at'] = new.get('last_429_at') or old.get('last_429_at')
 
@@ -420,7 +478,9 @@ def save_tracker_snapshot(step_name):
             "calls": merged_calls
         }, f, ensure_ascii=False, indent=2)
 
-    _persist_monthly_usage(current_calls)
+    delta = api_tracker.take_unflushed()
+    if delta:
+        _persist_monthly_usage(delta)
 
 
 def _get_monthly_usage_path():
@@ -430,9 +490,12 @@ def _get_monthly_usage_path():
     return output_dir / f'api_usage_{month_key}.json'
 
 
+_ADDITIVE_KEYS = ['total', 'success', 'rate_limited', 'server_errors',
+                   'client_errors', 'network_errors', 'tokens_in', 'tokens_out', 'cost_usd']
+
+
 def _persist_monthly_usage(calls_data):
-    """Atomically add current process's API calls to the cumulative monthly file.
-    Uses a file lock via atomic rename to handle concurrent writes."""
+    """Atomically add delta API calls to the cumulative monthly file."""
     path = _get_monthly_usage_path()
     path.parent.mkdir(exist_ok=True)
 
@@ -447,13 +510,10 @@ def _persist_monthly_usage(calls_data):
     cumulative = existing.get("calls", {})
     for label, entry in calls_data.items():
         if label not in cumulative:
-            cumulative[label] = {
-                "total": 0, "success": 0, "rate_limited": 0,
-                "server_errors": 0, "client_errors": 0, "network_errors": 0,
-            }
-        for key in ['total', 'success', 'rate_limited', 'server_errors',
-                     'client_errors', 'network_errors']:
-            cumulative[label][key] = cumulative[label].get(key, 0) + entry.get(key, 0)
+            cumulative[label] = _EMPTY_ENTRY.copy()
+        for key in _ADDITIVE_KEYS:
+            cumulative[label][key] = round(
+                cumulative[label].get(key, 0) + entry.get(key, 0), 6)
 
     tmp_path = path.with_suffix('.tmp')
     with open(tmp_path, 'w', encoding='utf-8') as f:
@@ -490,12 +550,12 @@ def load_and_merge_tracker_snapshots():
                 data = json.load(f)
             for label, entry in data.get('calls', {}).items():
                 if label not in merged.calls:
-                    merged.calls[label] = entry.copy()
+                    merged.calls[label] = _EMPTY_ENTRY.copy()
+                    merged.calls[label].update(entry)
                 else:
-                    # Merge counts
-                    for key in ['total', 'success', 'rate_limited', 'server_errors',
-                                'client_errors', 'network_errors']:
-                        merged.calls[label][key] = merged.calls[label].get(key, 0) + entry.get(key, 0)
+                    for key in _ADDITIVE_KEYS:
+                        merged.calls[label][key] = round(
+                            merged.calls[label].get(key, 0) + entry.get(key, 0), 6)
                     # Keep earliest first_429 and latest last_429
                     if entry.get('first_429_at'):
                         if not merged.calls[label].get('first_429_at') or entry['first_429_at'] < merged.calls[label]['first_429_at']:

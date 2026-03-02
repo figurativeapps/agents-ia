@@ -65,14 +65,17 @@ def run_command(description, command, critical=True):
         proc.wait()
         combined = ''.join(collected_output)
 
+        combined_lower = combined.lower()
+        is_rate_limit = (
+            'RATE LIMIT ATTEINT' in combined
+            or 'rate limit' in combined_lower
+            or 'quota exhausted' in combined_lower
+            or '429' in combined
+        )
+
         if proc.returncode != 0:
-            is_rate_limit = (
-                '429' in combined
-                or 'rate limit' in combined.lower()
-                or 'RATE LIMIT' in combined
-            )
             if is_rate_limit:
-                print(f"\n⏸️  Rate limit detected in: {description}")
+                print(f"\n⏸️  Rate limit / quota detected in: {description}")
                 return 'rate_limited'
 
             print(f"❌ Error in {description}")
@@ -82,8 +85,8 @@ def run_command(description, command, critical=True):
                 sys.exit(1)
             return 'error'
 
-        if 'RATE LIMIT ATTEINT' in combined:
-            print("⚠️  Rate limit warnings detected during this step")
+        if is_rate_limit:
+            print("⚠️  Rate limit / quota warnings detected during this step")
             return 'rate_limited'
 
         return 'ok'

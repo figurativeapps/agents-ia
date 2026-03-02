@@ -39,7 +39,7 @@ logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(me
 load_dotenv()
 
 # Local imports
-from api_utils import call_with_retry, save_tracker_snapshot
+from api_utils import call_with_retry, save_tracker_snapshot, api_tracker
 
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 
@@ -178,6 +178,10 @@ Regles:
 
         if response.status_code == 200:
             data = response.json()
+            usage = data.get('usage', {})
+            api_tracker.record_tokens("Anthropic score",
+                                      tokens_in=usage.get('input_tokens', 0),
+                                      tokens_out=usage.get('output_tokens', 0))
             content = data.get('content', [{}])[0].get('text', '{}')
 
             # Parse JSON (handle markdown wrapping)

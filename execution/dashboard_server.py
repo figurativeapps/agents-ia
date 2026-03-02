@@ -158,6 +158,78 @@ def get_status():
     }
 
 
+API_GROUPS = [
+    {
+        "label": "Serper",
+        "apis": ["Serper Maps", "Serper Web", "Serper OSINT"],
+        "quota": 2500,
+        "display": "quota",
+    },
+    {
+        "label": "Firecrawl",
+        "apis": ["Firecrawl scrape"],
+        "prefix_match": "Firecrawl scrape ",
+        "quota": 3000,
+        "display": "quota",
+    },
+    {
+        "label": "Anthropic",
+        "apis": ["Anthropic classify", "Anthropic score"],
+        "quota": None,
+        "display": "cost",
+    },
+    {
+        "label": "HubSpot",
+        "apis": [],
+        "prefix_match": "HubSpot",
+        "quota": None,
+        "display": "calls",
+    },
+    {
+        "label": "Enrichissement",
+        "apis": ["Hunter domain-search", "Apollo people-search", "MillionVerifier"],
+        "quota": None,
+        "display": "calls_detail",
+    },
+]
+
+
+def _aggregate_calls(calls, api_names, prefix_match=None):
+    """Sum call data across multiple API labels. prefix_match catches dynamic labels."""
+    agg = {"total": 0, "success": 0, "rate_limited": 0, "errors": 0,
+           "tokens_in": 0, "tokens_out": 0, "cost_usd": 0.0}
+    matched = set()
+
+    for name in api_names:
+        d = calls.get(name, {})
+        agg["total"] += d.get("total", 0)
+        agg["success"] += d.get("success", 0)
+        agg["rate_limited"] += d.get("rate_limited", 0)
+        agg["errors"] += (d.get("server_errors", 0) + d.get("client_errors", 0)
+                          + d.get("network_errors", 0))
+        agg["tokens_in"] += d.get("tokens_in", 0)
+        agg["tokens_out"] += d.get("tokens_out", 0)
+        agg["cost_usd"] += d.get("cost_usd", 0.0)
+        matched.add(name)
+
+    if prefix_match:
+        for label, d in calls.items():
+            if label in matched:
+                continue
+            if label.startswith(prefix_match) or label == prefix_match.strip():
+                agg["total"] += d.get("total", 0)
+                agg["success"] += d.get("success", 0)
+                agg["rate_limited"] += d.get("rate_limited", 0)
+                agg["errors"] += (d.get("server_errors", 0) + d.get("client_errors", 0)
+                                  + d.get("network_errors", 0))
+                agg["tokens_in"] += d.get("tokens_in", 0)
+                agg["tokens_out"] += d.get("tokens_out", 0)
+                agg["cost_usd"] += d.get("cost_usd", 0.0)
+
+    agg["cost_usd"] = round(agg["cost_usd"], 4)
+    return agg
+
+
 @app.get("/api/usage")
 def get_usage():
     calls = load_monthly_usage()
@@ -169,105 +241,55 @@ def get_usage():
         else:
             merged = load_and_merge_tracker_snapshots()
             if merged.calls:
-                calls = {
-                    label: {
-                        "total": e["total"],
-                        "success": e["success"],
-                        "rate_limited": e["rate_limited"],
-                        "server_errors": e.get("server_errors", 0),
-                        "client_errors": e.get("client_errors", 0),
-                        "network_errors": e.get("network_errors", 0),
-                    }
-                    for label, e in merged.calls.items()
-                }
+                calls = {label: e for label, e in merged.calls.items()}
 
-    usage = []
-    seen = set()
+    groups = []
+    for grp in API_GROUPS:
+        agg = _aggregate_calls(calls, grp["apis"], grp.get("prefix_match"))
+        quota = grp["quota"]
+        pct = round(agg["success"] / quota * 100, 1) if quota and quota > 0 else None
 
-    primary_apis = [
-        "Serper Maps", "Serper OSINT", "Firecrawl scrape",
-        "Anthropic classify", "Anthropic score",
-        "Hunter domain-search", "Apollo people-search",
-        "MillionVerifier",
-        "HubSpot contact-search",
-        "Serper Web",
-    ]
+        detail = []
+        if grp["display"] in ("calls_detail",):
+            for sub_name in grp["apis"]:
+                d = calls.get(sub_name, {})
+                sub_limits = API_LIMITS.get(sub_name, {})
+                sub_quota = sub_limits.get("monthly_quota")
+                sub_used = d.get("success", 0)
+                detail.append({
+                    "label": sub_name.split(" ")[-1] if " " in sub_name else sub_name,
+                    "used": sub_used,
+                    "quota": sub_quota,
+                    "pct": round(sub_used / sub_quota * 100, 1) if sub_quota else None,
+                    "bottleneck": sub_limits.get("bottleneck", False),
+                })
+        elif grp["display"] == "quota" and len(grp["apis"]) > 1:
+            for sub_name in grp["apis"]:
+                d = calls.get(sub_name, {})
+                detail.append({
+                    "label": sub_name.replace("Serper ", ""),
+                    "used": d.get("success", 0),
+                })
 
-    for label in primary_apis:
-        limits = API_LIMITS.get(label, {})
-        call_data = calls.get(label, {})
-        quota = limits.get("monthly_quota")
-        used = call_data.get("success", 0)
-        total_calls = call_data.get("total", 0)
-        rate_limited = call_data.get("rate_limited", 0)
-        errors = (
-            call_data.get("server_errors", 0)
-            + call_data.get("client_errors", 0)
-            + call_data.get("network_errors", 0)
-        )
-        pct = round(used / quota * 100, 1) if quota and quota > 0 else None
-
-        usage.append({
-            "label": label,
+        groups.append({
+            "label": grp["label"],
+            "display": grp["display"],
             "quota": quota,
-            "used": used,
-            "total_calls": total_calls,
-            "rate_limited": rate_limited,
-            "errors": errors,
+            "used": agg["success"],
+            "total_calls": agg["total"],
+            "rate_limited": agg["rate_limited"],
+            "errors": agg["errors"],
             "pct": pct,
-            "shared_with": limits.get("shared_with"),
-            "bottleneck": limits.get("bottleneck", False),
-        })
-        seen.add(label)
-
-    # Aggregate per-URL entries (e.g. "Firecrawl scrape https://...") into parent
-    AGGREGATE_PREFIXES = ["Firecrawl scrape ", "HubSpot "]
-    for label, call_data in calls.items():
-        if label in seen:
-            continue
-        parent = None
-        for prefix in AGGREGATE_PREFIXES:
-            if label.startswith(prefix) and label != prefix.strip():
-                parent = prefix.strip()
-                break
-        if parent:
-            match = next((u for u in usage if u["label"] == parent), None)
-            if match:
-                match["total_calls"] += call_data.get("total", 0)
-                match["used"] += call_data.get("success", 0)
-                match["rate_limited"] += call_data.get("rate_limited", 0)
-                match["errors"] += (
-                    call_data.get("server_errors", 0)
-                    + call_data.get("client_errors", 0)
-                    + call_data.get("network_errors", 0)
-                )
-                if match["quota"] and match["quota"] > 0:
-                    match["pct"] = round(match["used"] / match["quota"] * 100, 1)
-            continue
-        limits = API_LIMITS.get(label, {})
-        quota = limits.get("monthly_quota")
-        used = call_data.get("success", 0)
-        pct = round(used / quota * 100, 1) if quota and quota > 0 else None
-        usage.append({
-            "label": label,
-            "quota": quota,
-            "used": used,
-            "total_calls": call_data.get("total", 0),
-            "rate_limited": call_data.get("rate_limited", 0),
-            "errors": (
-                call_data.get("server_errors", 0)
-                + call_data.get("client_errors", 0)
-                + call_data.get("network_errors", 0)
-            ),
-            "pct": pct,
-            "shared_with": limits.get("shared_with"),
-            "bottleneck": limits.get("bottleneck", False),
+            "cost_usd": agg["cost_usd"],
+            "tokens_in": agg["tokens_in"],
+            "tokens_out": agg["tokens_out"],
+            "detail": detail,
         })
 
     monthly_path = TMP_DIR / f'api_usage_{datetime.now().strftime("%Y-%m")}.json'
     monthly_data = _read_json(monthly_path)
     ts = (monthly_data or {}).get("last_updated", "")
-    return {"usage": usage, "timestamp": ts}
+    return {"groups": groups, "timestamp": ts}
 
 
 @app.get("/api/logs")
@@ -656,6 +678,26 @@ button:active { transform: scale(.97); }
   color: var(--text2);
 }
 .api-stats .err { color: var(--red); }
+.cost-display {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--accent2);
+  margin-bottom: 6px;
+}
+.api-detail {
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 6px;
+}
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: .68rem;
+  color: var(--text2);
+  padding: 1px 0;
+}
+.detail-row .detail-label { font-weight: 500; }
+.detail-row .detail-val { color: var(--text); }
 
 /* Country progress */
 .country-track {
@@ -1009,29 +1051,55 @@ function renderCountryChips(d){
   }).join('');
 }
 
-function renderUsage(items){
+function renderUsage(groups){
   const grid = document.getElementById('apiGrid');
   grid.innerHTML = '';
-  items.forEach(a => {
+  groups.forEach(g => {
     const card = document.createElement('div');
     card.className = 'api-card';
-    let tags = '';
-    if(a.bottleneck) tags += '<span class="tag tag-bottleneck">BOTTLENECK</span>';
-    if(a.shared_with) tags += `<span class="tag tag-shared">= ${a.shared_with}</span>`;
-    const pct = a.pct !== null ? a.pct : 0;
-    const color = pct >= 80 ? 'red' : (pct >= 50 ? 'orange' : 'green');
-    const quotaTxt = a.quota ? a.quota.toLocaleString() : 'illimite';
-    const errTxt = a.rate_limited > 0
-      ? `<span class="err">${a.rate_limited} x 429</span>`
-      : (a.errors > 0 ? `<span class="err">${a.errors} err</span>` : '');
+
+    const errTxt = g.rate_limited > 0
+      ? `<span class="err">${g.rate_limited} x 429</span>`
+      : (g.errors > 0 ? `<span class="err">${g.errors} err</span>` : '');
+
+    let statsHtml = '';
+    let gaugeHtml = '';
+
+    if(g.display === 'cost'){
+      const cost = g.cost_usd !== undefined ? g.cost_usd.toFixed(2) : '0.00';
+      gaugeHtml = `<div class="cost-display">$${cost}</div>`;
+      statsHtml = `<span>${g.total_calls} appels</span><span>${errTxt}</span>`;
+    } else if(g.display === 'quota'){
+      const pct = g.pct !== null && g.pct !== undefined ? g.pct : 0;
+      const color = pct >= 80 ? 'red' : (pct >= 50 ? 'orange' : 'green');
+      gaugeHtml = `<div class="gauge-bar"><div class="gauge-fill gauge-${color}" style="width:${pct}%"></div></div>`;
+      statsHtml = `<span>${g.used} / ${g.quota ? g.quota.toLocaleString() : '—'}</span><span>${g.quota ? pct+'%' : '—'}</span>${errTxt}`;
+    } else {
+      gaugeHtml = '';
+      statsHtml = `<span>${g.total_calls} appels</span><span>${g.used} OK</span>${errTxt}`;
+    }
+
+    let detailHtml = '';
+    if(g.detail && g.detail.length > 0){
+      detailHtml = '<div class="api-detail">' + g.detail.map(d => {
+        let sub = `<span class="detail-label">${d.label}</span>`;
+        if(d.quota){
+          const dp = d.pct !== null ? d.pct : 0;
+          sub += `<span class="detail-val">${d.used}/${d.quota}`;
+          if(d.bottleneck) sub += ' <span class="tag tag-bottleneck" style="font-size:.55rem;padding:1px 4px">!</span>';
+          sub += `</span>`;
+        } else {
+          sub += `<span class="detail-val">${d.used}</span>`;
+        }
+        return `<div class="detail-row">${sub}</div>`;
+      }).join('') + '</div>';
+    }
+
     card.innerHTML = `
-      <div class="api-name">${a.label} ${tags}</div>
-      <div class="gauge-bar"><div class="gauge-fill gauge-${color}" style="width:${a.quota ? pct : 0}%"></div></div>
-      <div class="api-stats">
-        <span>${a.used} / ${quotaTxt}</span>
-        <span>${a.quota ? pct+'%' : '—'}</span>
-        ${errTxt}
-      </div>`;
+      <div class="api-name">${g.label}</div>
+      ${gaugeHtml}
+      <div class="api-stats">${statsHtml}</div>
+      ${detailHtml}`;
     grid.appendChild(card);
   });
 }
@@ -1055,7 +1123,7 @@ async function refresh(){
       statusR.json(), usageR.json(), logsR.json()
     ]);
     updateStatus(statusD);
-    renderUsage(usageD.usage || []);
+    renderUsage(usageD.groups || []);
     renderLogs(logsD.lines || []);
   } catch(e){
     console.error('Refresh error:', e);
