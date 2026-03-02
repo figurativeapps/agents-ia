@@ -43,49 +43,56 @@ PYTHON = sys.executable
 # ───────────────────────────────────────────────────────────────
 
 def run_command(description, command, critical=True):
-    """Run a shell command. Returns 'ok', 'error', or 'rate_limited'."""
+    """Run a shell command with real-time output streaming.
+    Returns 'ok', 'error', or 'rate_limited'."""
     print(f"\n{'='*60}")
     print(f"🔄 {description}")
     print(f"{'='*60}")
+    sys.stdout.flush()
 
+    collected_output = []
     try:
-        result = subprocess.run(
-            command, shell=True, check=True,
-            capture_output=True, text=True,
-            encoding='utf-8', errors='replace'
+        proc = subprocess.Popen(
+            command, shell=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding='utf-8', errors='replace',
+            bufsize=1,
         )
-        print(result.stdout)
+        for line in proc.stdout:
+            print(line, end='', flush=True)
+            collected_output.append(line)
 
-        if 'RATE LIMIT ATTEINT' in (result.stdout or ''):
+        proc.wait()
+        combined = ''.join(collected_output)
+
+        if proc.returncode != 0:
+            is_rate_limit = (
+                '429' in combined
+                or 'rate limit' in combined.lower()
+                or 'RATE LIMIT' in combined
+            )
+            if is_rate_limit:
+                print(f"\n⏸️  Rate limit detected in: {description}")
+                return 'rate_limited'
+
+            print(f"❌ Error in {description}")
+            print(f"Exit code: {proc.returncode}")
+            if critical:
+                print("\n⚠️  Critical error - stopping pipeline")
+                sys.exit(1)
+            return 'error'
+
+        if 'RATE LIMIT ATTEINT' in combined:
             print("⚠️  Rate limit warnings detected during this step")
             return 'rate_limited'
 
         return 'ok'
 
-    except subprocess.CalledProcessError as e:
-        combined = (e.stdout or '') + (e.stderr or '')
-        is_rate_limit = (
-            '429' in combined
-            or 'rate limit' in combined.lower()
-            or 'RATE LIMIT' in combined
-        )
-
-        if is_rate_limit:
-            print(f"\n⏸️  Rate limit detected in: {description}")
-            if e.stdout:
-                print(e.stdout)
-            return 'rate_limited'
-
-        print(f"❌ Error in {description}")
-        print(f"Exit code: {e.returncode}")
-        if e.stdout:
-            print(e.stdout)
-        print(f"Error output:\n{e.stderr}")
-
+    except Exception as e:
+        print(f"❌ Error launching: {description}: {e}")
         if critical:
             print("\n⚠️  Critical error - stopping pipeline")
             sys.exit(1)
-
         return 'error'
 
 

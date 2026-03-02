@@ -186,14 +186,17 @@ CONTACT_PAGE_SUFFIXES = [
 ]
 
 
+FIRECRAWL_DELAY = 13  # 5 req/min free tier → 12s minimum, +1s safety margin
+
 def _scrape_page(url, headers):
-    """Scrape a single page via Firecrawl. Respects global semaphore for rate limiting."""
+    """Scrape a single page via Firecrawl. Respects global semaphore + rate limit delay."""
     payload = {'url': url}
     sem = _firecrawl_semaphore
 
     if sem:
         sem.acquire()
     try:
+        sleep_between_calls(FIRECRAWL_DELAY, label="Firecrawl")
         resp = call_with_retry(
             lambda: requests.post(
                 "https://api.firecrawl.dev/v0/scrape",
