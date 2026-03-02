@@ -1,6 +1,7 @@
 """
-STEP 6: Sync to HubSpot CRM
+STEP 6: Sync to HubSpot CRM (Batch Mode)
 Syncs leads to HubSpot with deduplication logic (Upsert).
+Uses batch APIs for create/update/associate to minimize API calls.
 
 Usage:
     python sync_hubspot.py --input .tmp/enriched_leads.json
@@ -19,27 +20,24 @@ from hubspot.crm.companies import SimplePublicObjectInputForCreate as CompanyInp
 from time import sleep
 from datetime import datetime
 
-# Fix Windows console encoding issues
 if sys.platform == 'win32':
     try:
         sys.stdout.reconfigure(encoding='utf-8')
         sys.stderr.reconfigure(encoding='utf-8')
     except AttributeError:
-        # Python < 3.7
         import codecs
         sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'strict')
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
-# Logging
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s [%(name)s] %(message)s")
 
-# Load environment variables
 load_dotenv()
 
-# Local imports
 from api_utils import sdk_call_with_retry, save_tracker_snapshot
 
 HUBSPOT_API_KEY = os.getenv('HUBSPOT_API_KEY')
+
+BATCH_CHUNK_SIZE = 100
 
 CUSTOM_CONTACT_PROPERTIES = [
     {"name": "email_source", "label": "Email Source", "type": "string", "fieldType": "text",
@@ -50,8 +48,7 @@ CUSTOM_CONTACT_PROPERTIES = [
 def init_hubspot_client():
     """Initialize HubSpot API client"""
     if not HUBSPOT_API_KEY:
-        raise ValueError("❌ HUBSPOT_API_KEY not found in .env file")
-
+        raise ValueError("HUBSPOT_API_KEY not found in .env file")
     return HubSpot(access_token=HUBSPOT_API_KEY)
 
 
@@ -90,135 +87,129 @@ def ensure_custom_properties(client):
             print(f"  ⚠️  Could not create property {prop_def['name']}: {str(e)[:100]}")
 
 
-def search_contact_by_email(client, email):
-    """
-    Search for existing contact by email
+# ───────────────────────────────────────────────────────────────
+# Phase 1 helpers: Search
+# ───────────────────────────────────────────────────────────────
 
-    Returns:
-        Contact ID if found, None otherwise
-    """
+def _search_company(client, lead):
+    """Search for existing company by domain or name. Returns company_id or None."""
+    company_name = lead.get('Nom_Entreprise', '')
+    domain = lead.get('Site_Web', '').replace('https://', '').replace('http://', '').split('/')[0]
+
+    if not company_name and not domain:
+        return None
+
     try:
-        # Use the search API
-        filter_groups = [{
-            "filters": [{
-                "propertyName": "email",
-                "operator": "EQ",
-                "value": email
-            }]
-        }]
+        if domain:
+            filter_groups = [{"filters": [{"propertyName": "domain", "operator": "EQ", "value": domain}]}]
+        else:
+            filter_groups = [{"filters": [{"propertyName": "name", "operator": "EQ", "value": company_name}]}]
 
+        results = sdk_call_with_retry(
+            lambda: client.crm.companies.search_api.do_search(
+                public_object_search_request={"filterGroups": filter_groups, "properties": ["name", "domain"]}
+            ),
+            label="HubSpot company-search"
+        )
+        if results.total > 0:
+            return results.results[0].id
+        return None
+    except Exception as e:
+        print(f"    ⚠️  Company search error: {str(e)[:50]}")
+        return None
+
+
+def _search_contact_by_email(client, email):
+    """Search for existing contact by email. Returns contact_id or None."""
+    if not email:
+        return None
+    try:
         search_request = {
-            "filterGroups": filter_groups,
+            "filterGroups": [{"filters": [{"propertyName": "email", "operator": "EQ", "value": email}]}],
             "properties": ["email", "firstname", "lastname", "phone", "company"]
         }
-
         results = sdk_call_with_retry(
             lambda: client.crm.contacts.search_api.do_search(public_object_search_request=search_request),
             label="HubSpot contact-search"
         )
-
         if results.total > 0:
             return results.results[0].id
-
         return None
-
     except Exception as e:
-        print(f"    ⚠️  Search error: {str(e)[:50]}")
+        print(f"    ⚠️  Contact search error: {str(e)[:50]}")
         return None
 
 
-def create_or_update_company(client, lead):
-    """
-    Create or update company in HubSpot
+def _search_contact_by_company(client, lead):
+    """Fallback: search for existing contact by company name or website domain.
 
-    Returns:
-        Company ID
+    Used when the lead has no email — prevents creating duplicate contacts
+    for the same company.
+    Returns contact_id or None.
     """
-    company_name = lead.get('Nom_Entreprise', '')
-    domain = lead.get('Site_Web', '').replace('https://', '').replace('http://', '').split('/')[0]
+    company_name = lead.get('Nom_Entreprise', '').strip()
+    domain = lead.get('Site_Web', '').replace('https://', '').replace('http://', '').split('/')[0].replace('www.', '')
 
-    if not company_name:
+    if not company_name and not domain:
+        return None
+
+    filter_groups = []
+    if company_name:
+        filter_groups.append(
+            {"filters": [{"propertyName": "company", "operator": "EQ", "value": company_name}]}
+        )
+    if domain:
+        filter_groups.append(
+            {"filters": [{"propertyName": "website", "operator": "CONTAINS_TOKEN", "value": domain}]}
+        )
+
+    if not filter_groups:
         return None
 
     try:
-        # Search for existing company by domain or name
-        if domain:
-            filter_groups = [{
-                "filters": [{
-                    "propertyName": "domain",
-                    "operator": "EQ",
-                    "value": domain
-                }]
-            }]
-        else:
-            filter_groups = [{
-                "filters": [{
-                    "propertyName": "name",
-                    "operator": "EQ",
-                    "value": company_name
-                }]
-            }]
-
         search_request = {
             "filterGroups": filter_groups,
-            "properties": ["name", "domain"]
+            "properties": ["email", "company", "website"]
         }
-
         results = sdk_call_with_retry(
-            lambda: client.crm.companies.search_api.do_search(public_object_search_request=search_request),
-            label="HubSpot company-search"
+            lambda: client.crm.contacts.search_api.do_search(public_object_search_request=search_request),
+            label="HubSpot contact-search-by-company"
         )
-
         if results.total > 0:
-            # Company exists - update it
-            company_id = results.results[0].id
-            print(f"    🏢 Company exists: {company_name}")
-            return company_id
-
-        # Create new company
-        company_properties = {
-            "name": company_name,
-            "domain": domain,
-            "city": lead.get('Ville', ''),
-            "address": lead.get('Adresse', ''),
-            "zip": lead.get('Code_Postal', ''),
-            "country": lead.get('Pays', ''),
-            "phone": lead.get('Tel_Standard', ''),
-            "description": f"Industrie: {lead.get('Industrie', '')}" if lead.get('Industrie') else '',
-        }
-
-        # Remove empty values
-        company_properties = {k: v for k, v in company_properties.items() if v and str(v).strip()}
-
-        company_input = CompanyInput(properties=company_properties)
-        company = sdk_call_with_retry(
-            lambda: client.crm.companies.basic_api.create(simple_public_object_input_for_create=company_input),
-            label="HubSpot company-create"
-        )
-
-        print(f"    🏢 Created company: {company_name}")
-        return company.id
-
+            return results.results[0].id
+        return None
     except Exception as e:
-        error_msg = str(e)
-        print(f"    ⚠️  Company error: {error_msg[:200]}")
-        if hasattr(e, 'body'):
-            print(f"    📋 Error details: {e.body}")
+        print(f"    ⚠️  Contact search by company error: {str(e)[:50]}")
         return None
 
 
-def create_contact(client, lead, company_id=None):
-    """Create new contact in HubSpot (works with or without email)"""
+# ───────────────────────────────────────────────────────────────
+# Property builders
+# ───────────────────────────────────────────────────────────────
 
+def _build_company_properties(lead):
+    """Build company properties dict from a lead."""
+    domain = lead.get('Site_Web', '').replace('https://', '').replace('http://', '').split('/')[0]
+    props = {
+        "name": lead.get('Nom_Entreprise', ''),
+        "domain": domain,
+        "address": lead.get('Adresse', ''),
+        "zip": lead.get('Code_Postal', ''),
+        "country": lead.get('Pays', ''),
+        "phone": lead.get('Tel_Standard', ''),
+        "description": f"Industrie: {lead.get('Industrie', '')}" if lead.get('Industrie') else '',
+    }
+    return {k: v for k, v in props.items() if v and str(v).strip()}
+
+
+def _build_contact_properties(lead):
+    """Build contact properties dict from a lead."""
     email = lead.get('Email_Generique')
-
-    # Prepare contact properties - using standard HubSpot properties
-    properties = {
+    props = {
         "phone": lead.get('Tel_Standard', ''),
         "company": lead.get('Nom_Entreprise', ''),
         "website": lead.get('Site_Web', ''),
         "address": lead.get('Adresse', ''),
-        "city": lead.get('Ville', ''),
         "zip": lead.get('Code_Postal', ''),
         "country": lead.get('Pays', ''),
         "industrie": lead.get('Industrie', ''),
@@ -226,216 +217,357 @@ def create_contact(client, lead, company_id=None):
         "lifecyclestage": "lead",
         "hs_lead_status": "NEW",
     }
-
     if email:
-        properties["email"] = email
-
+        props["email"] = email
     if lead.get('Email_Source'):
-        properties["email_source"] = lead.get('Email_Source', '')
-
-    # Add name fields if available
+        props["email_source"] = lead.get('Email_Source', '')
     if lead.get('Nom_Decideur'):
         name_parts = lead.get('Nom_Decideur', '').split()
         if name_parts:
-            properties["firstname"] = name_parts[0]
+            props["firstname"] = name_parts[0]
             if len(name_parts) > 1:
-                properties["lastname"] = ' '.join(name_parts[1:])
-
-    # Add job title if available
+                props["lastname"] = ' '.join(name_parts[1:])
     if lead.get('Poste_Decideur'):
-        properties["jobtitle"] = lead.get('Poste_Decideur')
-
-    # Remove empty values
-    properties = {k: v for k, v in properties.items() if v and v.strip()}
-
-    try:
-        contact_input = SimplePublicObjectInputForCreate(properties=properties)
-        contact = sdk_call_with_retry(
-            lambda: client.crm.contacts.basic_api.create(simple_public_object_input_for_create=contact_input),
-            label="HubSpot contact-create"
-        )
-
-        # Associate with company if company_id exists
-        if company_id:
-            try:
-                sdk_call_with_retry(
-                    lambda: client.crm.contacts.associations_api.create(
-                        contact_id=contact.id,
-                        to_object_type="companies",
-                        to_object_id=company_id,
-                        association_type="contact_to_company"
-                    ),
-                    label="HubSpot contact-company association"
-                )
-            except Exception as assoc_err:
-                status = getattr(assoc_err, 'status', None)
-                if status != 409:
-                    logging.getLogger(__name__).warning(
-                        "Association error (contact %s → company %s): %s",
-                        contact.id, company_id, str(assoc_err)[:100]
-                    )
-
-        print(f"    ✅ Created contact: {email}")
-        return contact.id
-
-    except ApiException as e:
-        error_msg = str(e)
-        print(f"    ❌ Error creating contact: {error_msg[:200]}")
-        if hasattr(e, 'body'):
-            print(f"    📋 Error details: {e.body}")
-        return None
-    except Exception as e:
-        print(f"    ❌ Unexpected error: {str(e)[:200]}")
-        return None
+        props["jobtitle"] = lead.get('Poste_Decideur')
+    return {k: v for k, v in props.items() if v and v.strip()}
 
 
-def update_contact(client, contact_id, lead):
-    """Update existing contact with new information"""
-
-    # Prepare update properties (only non-empty values)
-    properties = {}
-
-    if lead.get('Tel_Standard'):
-        properties['phone'] = lead.get('Tel_Standard')
-
-    if lead.get('Industrie'):
-        properties['industrie'] = lead.get('Industrie')  # Custom field created in HubSpot
-
-    if lead.get('LinkedIn_URL'):
-        properties['hs_linkedin_url'] = lead.get('LinkedIn_URL')  # HubSpot standard field
-
-    if lead.get('Poste_Decideur'):
-        properties['jobtitle'] = lead.get('Poste_Decideur')
-
-    if lead.get('Adresse'):
-        properties['address'] = lead.get('Adresse')
-
-    if lead.get('Ville'):
-        properties['city'] = lead.get('Ville')
-
-    if lead.get('Code_Postal'):
-        properties['zip'] = lead.get('Code_Postal')
-
-    if lead.get('Pays'):
-        properties['country'] = lead.get('Pays')
-
-    if not properties:
-        print(f"    ⏭️  No new data to update")
-        return contact_id
-
-    try:
-        sdk_call_with_retry(
-            lambda: client.crm.contacts.basic_api.update(
-                contact_id=contact_id,
-                simple_public_object_input={"properties": properties}
-            ),
-            label="HubSpot contact-update"
-        )
-        print(f"    ♻️  Updated contact")
-        return contact_id
-
-    except ApiException as e:
-        print(f"    ⚠️  Update error: {str(e)[:80]}")
-        return contact_id
+def _build_update_properties(lead):
+    """Build properties for updating an existing contact (only non-empty fields)."""
+    props = {}
+    field_map = {
+        'Tel_Standard': 'phone',
+        'Industrie': 'industrie',
+        'LinkedIn_URL': 'hs_linkedin_url',
+        'Poste_Decideur': 'jobtitle',
+        'Adresse': 'address',
+        'Code_Postal': 'zip',
+        'Pays': 'country',
+    }
+    for src, dst in field_map.items():
+        val = lead.get(src)
+        if val and str(val).strip():
+            props[dst] = val
+    return props
 
 
-def sync_lead_to_hubspot(client, lead):
-    """
-    Sync a single lead to HubSpot with upsert logic
-    Respects the Statut_Sync field to avoid re-syncing deleted contacts
+# ───────────────────────────────────────────────────────────────
+# Phase 2-5: Batch operations
+# ───────────────────────────────────────────────────────────────
 
-    Returns:
-        Tuple: (HubSpot contact ID, new_status)
-    """
+def _chunked(items, size):
+    """Yield successive chunks of a list."""
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
 
-    company_name = lead.get('Nom_Entreprise', 'Unknown')
-    email = lead.get('Email_Generique')
-    sync_status = lead.get('Statut_Sync', 'New')
 
-    print(f"  🔄 Syncing: {company_name}")
+def _batch_create_companies(client, plans):
+    """Batch create companies for plans that need them. Updates plan['company_id']."""
+    for chunk in _chunked(plans, BATCH_CHUNK_SIZE):
+        inputs = []
+        for plan in chunk:
+            props = _build_company_properties(plan['lead'])
+            if props.get('name'):
+                inputs.append({"properties": props})
 
-    # Check if this contact was previously deleted from HubSpot
-    if sync_status == 'Deleted':
-        print(f"    🚫 Skipped - Contact marked as Deleted (was removed from HubSpot)")
-        return None, 'Deleted'
+        if not inputs:
+            continue
 
-    # Step 1: Create or get company
-    company_id = create_or_update_company(client, lead)
+        try:
+            result = sdk_call_with_retry(
+                lambda inp=inputs: client.crm.companies.batch_api.create(
+                    batch_input_simple_public_object_batch_input_for_create={"inputs": inp}
+                ),
+                label="HubSpot batch-company-create"
+            )
+            created = result.results if hasattr(result, 'results') else []
+            created_by_domain = {}
+            created_by_name = {}
+            for obj in created:
+                d = getattr(obj, 'properties', {}).get('domain', '')
+                n = getattr(obj, 'properties', {}).get('name', '')
+                if d:
+                    created_by_domain[d] = obj.id
+                if n:
+                    created_by_name[n] = obj.id
 
-    # Step 2: Check if contact exists (by email if available)
-    existing_contact_id = None
-    if email:
-        existing_contact_id = search_contact_by_email(client, email)
+            for plan in chunk:
+                lead = plan['lead']
+                domain = lead.get('Site_Web', '').replace('https://', '').replace('http://', '').split('/')[0]
+                name = lead.get('Nom_Entreprise', '')
+                cid = created_by_domain.get(domain) or created_by_name.get(name)
+                if cid:
+                    plan['company_id'] = cid
 
-    if existing_contact_id:
-        contact_id = update_contact(client, existing_contact_id, lead)
-        new_status = 'Synced'
-    else:
-        contact_id = create_contact(client, lead, company_id)
-        new_status = 'Synced' if contact_id else 'Failed'
+            print(f"    🏢 Batch created {len(created)} companies")
 
-    return contact_id, new_status
+        except Exception as e:
+            print(f"    ❌ Batch company create error: {str(e)[:200]}")
+            _fallback_create_companies_sequential(client, chunk)
 
+
+def _fallback_create_companies_sequential(client, plans):
+    """Fallback: create companies one by one if batch fails."""
+    for plan in plans:
+        lead = plan['lead']
+        name = lead.get('Nom_Entreprise', '')
+        if not name:
+            continue
+        try:
+            props = _build_company_properties(lead)
+            company_input = CompanyInput(properties=props)
+            company = sdk_call_with_retry(
+                lambda ci=company_input: client.crm.companies.basic_api.create(
+                    simple_public_object_input_for_create=ci
+                ),
+                label="HubSpot company-create"
+            )
+            plan['company_id'] = company.id
+        except Exception as e:
+            print(f"    ⚠️  Company create failed for {name}: {str(e)[:80]}")
+
+
+def _batch_create_contacts(client, plans):
+    """Batch create contacts. Updates plan['contact_id'] and lead statuses."""
+    for chunk in _chunked(plans, BATCH_CHUNK_SIZE):
+        inputs = []
+        email_to_plan = {}
+        idx_to_plan = {}
+
+        for i, plan in enumerate(chunk):
+            props = _build_contact_properties(plan['lead'])
+            inputs.append({"properties": props})
+            email = plan['lead'].get('Email_Generique', '')
+            if email:
+                email_to_plan[email.lower()] = plan
+            idx_to_plan[i] = plan
+
+        if not inputs:
+            continue
+
+        try:
+            result = sdk_call_with_retry(
+                lambda inp=inputs: client.crm.contacts.batch_api.create(
+                    batch_input_simple_public_object_batch_input_for_create={"inputs": inp}
+                ),
+                label="HubSpot batch-contact-create"
+            )
+            created = result.results if hasattr(result, 'results') else []
+
+            for obj in created:
+                email = getattr(obj, 'properties', {}).get('email', '')
+                plan = email_to_plan.get(email.lower()) if email else None
+                if plan:
+                    plan['contact_id'] = obj.id
+                    plan['lead']['Statut_Sync'] = 'Synced'
+                    plan['lead']['HubSpot_ID'] = str(obj.id)
+
+            # Handle contacts without email — match by index order
+            if len(created) == len(inputs):
+                for i, obj in enumerate(created):
+                    plan = idx_to_plan[i]
+                    if not plan.get('contact_id'):
+                        plan['contact_id'] = obj.id
+                        plan['lead']['Statut_Sync'] = 'Synced'
+                        plan['lead']['HubSpot_ID'] = str(obj.id)
+
+            print(f"    ✅ Batch created {len(created)} contacts")
+
+        except Exception as e:
+            print(f"    ❌ Batch contact create error: {str(e)[:200]}")
+            _fallback_create_contacts_sequential(client, chunk)
+
+
+def _fallback_create_contacts_sequential(client, plans):
+    """Fallback: create contacts one by one if batch fails."""
+    for plan in plans:
+        lead = plan['lead']
+        try:
+            props = _build_contact_properties(lead)
+            contact_input = SimplePublicObjectInputForCreate(properties=props)
+            contact = sdk_call_with_retry(
+                lambda ci=contact_input: client.crm.contacts.basic_api.create(
+                    simple_public_object_input_for_create=ci
+                ),
+                label="HubSpot contact-create"
+            )
+            plan['contact_id'] = contact.id
+            lead['Statut_Sync'] = 'Synced'
+            lead['HubSpot_ID'] = str(contact.id)
+        except Exception as e:
+            lead['Statut_Sync'] = 'Failed'
+            print(f"    ⚠️  Contact create failed for {lead.get('Nom_Entreprise', '?')}: {str(e)[:80]}")
+        sleep(0.3)
+
+
+def _batch_update_contacts(client, plans):
+    """Batch update existing contacts with new data."""
+    for chunk in _chunked(plans, BATCH_CHUNK_SIZE):
+        inputs = []
+        for plan in chunk:
+            props = _build_update_properties(plan['lead'])
+            if not props:
+                plan['lead']['Statut_Sync'] = 'Synced'
+                plan['lead']['HubSpot_ID'] = str(plan['contact_id'])
+                continue
+            inputs.append({"id": str(plan['contact_id']), "properties": props})
+
+        if not inputs:
+            for plan in chunk:
+                plan['lead']['Statut_Sync'] = 'Synced'
+                plan['lead']['HubSpot_ID'] = str(plan['contact_id'])
+            continue
+
+        try:
+            sdk_call_with_retry(
+                lambda inp=inputs: client.crm.contacts.batch_api.update(
+                    batch_input_simple_public_object_batch_input={"inputs": inp}
+                ),
+                label="HubSpot batch-contact-update"
+            )
+            for plan in chunk:
+                plan['lead']['Statut_Sync'] = 'Synced'
+                plan['lead']['HubSpot_ID'] = str(plan['contact_id'])
+
+            print(f"    ♻️  Batch updated {len(inputs)} contacts")
+
+        except Exception as e:
+            print(f"    ❌ Batch contact update error: {str(e)[:200]}")
+            for plan in chunk:
+                plan['lead']['Statut_Sync'] = 'Synced'
+                plan['lead']['HubSpot_ID'] = str(plan['contact_id'])
+
+
+def _batch_associate_contacts_to_companies(client, plans):
+    """Batch associate contacts with their companies."""
+    for chunk in _chunked(plans, BATCH_CHUNK_SIZE):
+        try:
+            from hubspot.crm.associations.v4 import BatchInputPublicDefaultAssociationMultiPost
+            from hubspot.crm.associations.v4.models import PublicDefaultAssociationMultiPost
+
+            inputs = []
+            for plan in chunk:
+                inputs.append(PublicDefaultAssociationMultiPost(
+                    _from={"id": str(plan['contact_id'])},
+                    to={"id": str(plan['company_id'])}
+                ))
+
+            if not inputs:
+                continue
+
+            association_input = BatchInputPublicDefaultAssociationMultiPost(inputs=inputs)
+            sdk_call_with_retry(
+                lambda ai=association_input: client.crm.associations.v4.batch_api.create_default(
+                    from_object_type="contacts",
+                    to_object_type="companies",
+                    batch_input_public_default_association_multi_post=ai
+                ),
+                label="HubSpot batch-association"
+            )
+            print(f"    🔗 Batch associated {len(inputs)} contacts → companies")
+
+        except Exception as e:
+            if '409' not in str(e):
+                print(f"    ⚠️  Batch association error: {str(e)[:100]}")
+
+
+# ───────────────────────────────────────────────────────────────
+# Main sync orchestrator
+# ───────────────────────────────────────────────────────────────
 
 def sync_leads(input_file, write_log=False):
-    """Sync all leads to HubSpot
+    """Sync all leads to HubSpot using batch APIs.
 
     Args:
         input_file: Path to enriched leads JSON
         write_log: If True, write a structured sync log to .tmp/
     """
-
-    # Initialize HubSpot client
     client = init_hubspot_client()
 
-    # Ensure custom properties exist before syncing
     print("🔧 Checking custom HubSpot properties...")
     ensure_custom_properties(client)
 
-    # Load leads
     with open(input_file, 'r', encoding='utf-8') as f:
         leads = json.load(f)
 
-    print(f"📋 Syncing {len(leads)} leads to HubSpot...\n")
+    total = len(leads)
+    print(f"📋 Syncing {total} leads to HubSpot (batch mode)...\n")
 
-    synced_count = 0
-    skipped_count = 0
-    failed_count = 0
-    results = []
+    # ── Phase 1: Search existing records ──
+    print("  Phase 1/5: Searching existing records...")
+    plans = []
+    skipped = 0
 
-    for i, lead in enumerate(leads, 1):
-        print(f"[{i}/{len(leads)}]")
+    for i, lead in enumerate(leads):
+        plan = {'idx': i, 'lead': lead, 'action': None, 'company_id': None, 'contact_id': None}
 
-        contact_id, new_status = sync_lead_to_hubspot(client, lead)
+        if lead.get('Statut_Sync') == 'Deleted':
+            plan['action'] = 'skip'
+            plans.append(plan)
+            skipped += 1
+            continue
 
-        # Update the lead's status
-        lead['Statut_Sync'] = new_status
+        plan['company_id'] = _search_company(client, lead)
 
-        if contact_id:
-            lead['HubSpot_ID'] = str(contact_id)
-            synced_count += 1
-        elif new_status == 'Deleted':
-            skipped_count += 1
-        elif new_status in ('Failed', 'No Email'):
-            failed_count += 1
+        email = lead.get('Email_Generique', '').strip()
+        plan['contact_id'] = _search_contact_by_email(client, email)
 
-        # Collect result for log
-        results.append({
-            "company": lead.get('Nom_Entreprise', 'Unknown'),
-            "email": lead.get('Email_Generique', ''),
-            "status": new_status,
-            "hubspot_id": str(contact_id) if contact_id else None,
-        })
+        if not plan['contact_id'] and not email:
+            plan['contact_id'] = _search_contact_by_company(client, lead)
+            if plan['contact_id']:
+                print(f"    🔍 Found existing contact for {lead.get('Nom_Entreprise', '?')} via company name/domain")
 
-        # Rate limiting
-        sleep(0.5)
+        plan['action'] = 'update' if plan['contact_id'] else 'create'
+        plans.append(plan)
+        sleep(0.2)
+
+    existing_companies = sum(1 for p in plans if p['company_id'] and p['action'] != 'skip')
+    existing_contacts = sum(1 for p in plans if p['contact_id'] and p['action'] != 'skip')
+    print(f"    Found {existing_companies} existing companies, {existing_contacts} existing contacts, {skipped} skipped")
+
+    # ── Phase 2: Batch create companies ──
+    needs_company = [p for p in plans if p['action'] != 'skip' and p['company_id'] is None
+                     and p['lead'].get('Nom_Entreprise')]
+    if needs_company:
+        print(f"  Phase 2/5: Batch creating {len(needs_company)} companies...")
+        _batch_create_companies(client, needs_company)
+    else:
+        print("  Phase 2/5: No companies to create")
+
+    # ── Phase 3: Batch create contacts ──
+    to_create = [p for p in plans if p['action'] == 'create']
+    if to_create:
+        print(f"  Phase 3/5: Batch creating {len(to_create)} contacts...")
+        _batch_create_contacts(client, to_create)
+    else:
+        print("  Phase 3/5: No contacts to create")
+
+    # ── Phase 4: Batch update contacts ──
+    to_update = [p for p in plans if p['action'] == 'update']
+    if to_update:
+        print(f"  Phase 4/5: Batch updating {len(to_update)} contacts...")
+        _batch_update_contacts(client, to_update)
+    else:
+        print("  Phase 4/5: No contacts to update")
+
+    # ── Phase 5: Batch associate ──
+    to_associate = [p for p in plans if p['contact_id'] and p['company_id'] and p['action'] != 'skip']
+    if to_associate:
+        print(f"  Phase 5/5: Batch associating {len(to_associate)} contacts → companies...")
+        _batch_associate_contacts_to_companies(client, to_associate)
+    else:
+        print("  Phase 5/5: No associations to create")
+
+    # ── Results ──
+    synced_count = sum(1 for p in plans if p['lead'].get('Statut_Sync') == 'Synced')
+    failed_count = sum(1 for p in plans if p['lead'].get('Statut_Sync') == 'Failed')
 
     print(f"\n✅ Sync complete!")
-    print(f"  📊 Total: {synced_count}/{len(leads)} contacts synced")
+    print(f"  📊 Total: {synced_count}/{total} contacts synced")
     if failed_count > 0:
         print(f"  ❌ Failed: {failed_count} contacts")
-    if skipped_count > 0:
-        print(f"  🚫 Skipped: {skipped_count} contacts (marked as Deleted)")
+    if skipped > 0:
+        print(f"  🚫 Skipped: {skipped} contacts (marked as Deleted)")
 
     # Save updated leads with HubSpot IDs
     with open(input_file, 'w', encoding='utf-8') as f:
@@ -447,12 +579,23 @@ def sync_leads(input_file, write_log=False):
         log_filename = f"sync_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         log_path = log_dir / log_filename
 
+        results = []
+        for plan in plans:
+            lead = plan['lead']
+            results.append({
+                "company": lead.get('Nom_Entreprise', 'Unknown'),
+                "email": lead.get('Email_Generique', ''),
+                "status": lead.get('Statut_Sync', 'Unknown'),
+                "hubspot_id": lead.get('HubSpot_ID'),
+            })
+
         log_data = {
             "run_date": datetime.now().isoformat(),
-            "total": len(leads),
+            "mode": "batch",
+            "total": total,
             "synced": synced_count,
             "failed": failed_count,
-            "skipped": skipped_count,
+            "skipped": skipped,
             "results": results
         }
 
@@ -477,7 +620,6 @@ def main():
         print(f"❌ Input file not found: {input_path}")
         return
 
-    # Sync to HubSpot
     sync_leads(input_path, write_log=args.write_log)
 
     print(f"\n✅ HubSpot sync complete!")

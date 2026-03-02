@@ -63,11 +63,15 @@ def save_to_excel(leads_data, excel_path):
 
     # Ensure all expected columns exist
     expected_columns = [
-        'Industrie', 'Nom_Entreprise', 'Adresse', 'Ville', 'Code_Postal', 'Pays',
+        'Industrie', 'Nom_Entreprise', 'Adresse', 'Code_Postal', 'Pays',
         'Site_Web', 'Tel_Standard', 'Email_Generique',
         'Nom_Decideur', 'Poste_Decideur', 'LinkedIn_URL',
         'Ecommerce', 'Date_Ajout', 'Statut_Sync'
     ]
+
+    # Migrate old "Ville" column to "Pays" if present
+    if 'Ville' in new_df.columns and 'Pays' not in new_df.columns:
+        new_df = new_df.rename(columns={'Ville': 'Pays'})
 
     for col in expected_columns:
         if col not in new_df.columns:
@@ -84,6 +88,13 @@ def save_to_excel(leads_data, excel_path):
     if excel_path.exists():
         try:
             existing_df = pd.read_excel(excel_path, sheet_name='Leads')
+
+            # Migrate old "Ville" column to "Pays"
+            if 'Ville' in existing_df.columns:
+                if 'Pays' not in existing_df.columns:
+                    existing_df = existing_df.rename(columns={'Ville': 'Pays'})
+                else:
+                    existing_df = existing_df.drop(columns=['Ville'])
 
             # Ensure existing data has all columns
             for col in expected_columns:
@@ -138,9 +149,9 @@ def save_to_excel(leads_data, excel_path):
 
         # Set column widths
         column_widths = {
-            'A': 20, 'B': 30, 'C': 40, 'D': 20, 'E': 12, 'F': 15,
-            'G': 35, 'H': 18, 'I': 30, 'J': 25, 'K': 20,
-            'L': 35, 'M': 12, 'N': 15, 'O': 15
+            'A': 20, 'B': 30, 'C': 40, 'D': 12, 'E': 15,
+            'F': 35, 'G': 18, 'H': 30, 'I': 25, 'J': 20,
+            'K': 35, 'L': 12, 'M': 15, 'N': 15
         }
 
         for col, width in column_widths.items():

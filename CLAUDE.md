@@ -6,6 +6,7 @@
 2. **Excel Locking** — Warn user to close `Generate_leads.xlsx` before `save_to_excel.py`
 3. **Self-anneal** — If script fails, read error, fix script, retry, update skill if needed
 4. **Check existing scripts first** — Before writing code, check if a script already exists in `execution/`
+5. **Lead Gen = 3 inputs** — L'utilisateur fournit uniquement : nb de leads + industrie cible + pays. Le mot "fabricant" est auto-prepend à la requête pour cibler les fabricants/constructeurs qui vendent des produits. Ne jamais demander plus d'info.
 
 ## Skills disponibles
 

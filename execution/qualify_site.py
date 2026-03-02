@@ -14,6 +14,8 @@ import logging
 import requests
 import argparse
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dotenv import load_dotenv
 from time import sleep
@@ -41,6 +43,19 @@ from api_utils import call_with_retry, sleep_between_calls, save_tracker_snapsho
 FIRECRAWL_API_KEY = os.getenv('FIRECRAWL_API_KEY')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 
+_firecrawl_semaphore = None
+_print_lock = threading.Lock()
+
+
+class CrawlError(Exception):
+    """Raised when a website crawl fails due to network/API issues (retryable)."""
+    pass
+
+
+def _safe_print(*args, **kwargs):
+    with _print_lock:
+        print(*args, **kwargs)
+
 
 def extract_emails(text):
     """Extract email addresses from text"""
@@ -56,109 +71,9 @@ def extract_emails(text):
     return list(set(filtered))  # Remove duplicates
 
 
-def classify_with_llm(text, url, industry=''):
+def classify_business(text, url):
     """
-    Use Claude Haiku to classify the website semantically.
-    Determines business type and e-commerce capability.
-
-    Args:
-        text: Website content (markdown from Firecrawl)
-        url: Website URL
-        industry: Industry context from search query
-
-    Returns:
-        Dictionary with:
-            - business_type: 'Manufacturer' | 'Service' | 'Unknown'
-            - ecommerce: 'Oui' | 'Non'
-            - confidence: int (0-100)
-            - justification: str
-            - tech_stack: str (detected e-commerce platform)
-    """
-    if not ANTHROPIC_API_KEY:
-        print(f"    ANTHROPIC_API_KEY not configured - falling back to keyword analysis")
-        return _fallback_keyword_classification(text, url)
-
-    # Truncate content to avoid excessive token usage (Haiku is cheap but let's be efficient)
-    content_truncated = text[:4000] if len(text) > 4000 else text
-
-    prompt = f"""Analyse ce site web et reponds UNIQUEMENT en JSON valide (pas de markdown, pas de texte avant/apres).
-
-URL: {url}
-Industrie recherchee: {industry}
-
-Contenu du site:
-{content_truncated}
-
-Reponds avec ce JSON exact:
-{{
-  "business_type": "Manufacturer" ou "Service" ou "Unknown",
-  "ecommerce": "Oui" ou "Non",
-  "confidence": 0-100,
-  "justification": "1 phrase explicative",
-  "tech_stack": "Shopify/WooCommerce/PrestaShop/Magento/custom/unknown"
-}}
-
-Regles de classification:
-- "Manufacturer" = fabrique, vend, distribue ou revend des PRODUITS physiques (fabricant, revendeur, distributeur, showroom, magasin en ligne). Inclut les sites qui vendent des produits meme s'ils utilisent du vocabulaire marketing lifestyle/bien-etre.
-- "Service" = propose des SERVICES (location, reservation, seances, soins, experiences, wellness center, spa privatif). Le client vient utiliser un service, il n'achete PAS un produit physique a emporter/livrer.
-- "Unknown" = impossible a determiner
-- "ecommerce" = "Oui" si le site permet d'acheter en ligne (panier, checkout, commander, prix affiches avec possibilite d'achat)
-- "tech_stack" = plateforme e-commerce detectee dans le contenu (Shopify, WooCommerce, PrestaShop, etc.) ou "unknown" si non detectable"""
-
-    try:
-        response = call_with_retry(
-            lambda: requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json"
-                },
-                json={
-                    "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 300,
-                    "messages": [{"role": "user", "content": prompt}]
-                },
-                timeout=30
-            ),
-            label="Anthropic classify"
-        )
-
-        if response.status_code == 200:
-            data = response.json()
-            content = data.get('content', [{}])[0].get('text', '{}')
-
-            # Parse JSON response (handle potential markdown wrapping)
-            content = content.strip()
-            if content.startswith('```'):
-                content = content.split('\n', 1)[-1].rsplit('```', 1)[0]
-
-            result = json.loads(content)
-
-            return {
-                'business_type': result.get('business_type', 'Unknown'),
-                'ecommerce': result.get('ecommerce', 'Non'),
-                'confidence': result.get('confidence', 0),
-                'justification': result.get('justification', ''),
-                'tech_stack': result.get('tech_stack', 'unknown')
-            }
-
-        else:
-            print(f"    LLM API error: {response.status_code} - falling back to keywords")
-            return _fallback_keyword_classification(text, url)
-
-    except json.JSONDecodeError:
-        print(f"    LLM response not valid JSON - falling back to keywords")
-        return _fallback_keyword_classification(text, url)
-    except Exception as e:
-        print(f"    LLM error: {str(e)[:50]} - falling back to keywords")
-        return _fallback_keyword_classification(text, url)
-
-
-def _fallback_keyword_classification(text, url):
-    """
-    Fallback keyword-based classification if LLM is unavailable.
-    Uses the original keyword matching logic.
+    Keyword-based classification of business type and e-commerce capability.
     """
     text_lower = text.lower()
 
@@ -201,6 +116,69 @@ def _fallback_keyword_classification(text, url):
     }
 
 
+def classify_with_llm(text, url, industry=''):
+    """Classify business type using Claude Haiku. Returns dict or None on failure."""
+    if not ANTHROPIC_API_KEY:
+        return None
+
+    snippet = text[:3000]
+    prompt = f"""Analyse ce site web et classifie l'entreprise.
+
+URL: {url}
+Industrie recherchée: {industry or 'non spécifiée'}
+
+Contenu du site:
+{snippet}
+
+Réponds UNIQUEMENT en JSON strict (pas de markdown):
+{{"business_type": "Manufacturer" ou "Service" ou "Unknown", "ecommerce": "Oui" ou "Non", "confidence": 0-100, "justification": "explication courte"}}
+
+Règles:
+- "Manufacturer" = fabrique, construit, vend ses propres produits physiques (saunas, hammams, spas, etc.), même s'il propose aussi de l'installation
+- "Service" = propose uniquement des prestations (spa/hammam d'accueil, massage, séances bien-être) sans vendre de produits
+- Un revendeur/distributeur qui vend des produits = "Manufacturer"
+- En cas de doute entre Manufacturer et Service, favorise "Manufacturer" si le site présente un catalogue de produits à vendre"""
+
+    try:
+        resp = call_with_retry(
+            lambda: requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 200,
+                    "messages": [{"role": "user", "content": prompt}]
+                },
+                timeout=30
+            ),
+            label="Anthropic classify"
+        )
+
+        if resp.status_code != 200:
+            logging.warning(f"Anthropic classify returned {resp.status_code}")
+            return None
+
+        raw = resp.json()['content'][0]['text'].strip()
+        raw = re.sub(r'^```json\s*', '', raw)
+        raw = re.sub(r'\s*```$', '', raw)
+        result = json.loads(raw)
+
+        return {
+            'business_type': result.get('business_type', 'Unknown'),
+            'ecommerce': result.get('ecommerce', 'Non'),
+            'confidence': result.get('confidence', 70),
+            'justification': result.get('justification', 'LLM classification'),
+            'tech_stack': 'unknown'
+        }
+    except Exception as e:
+        logging.warning(f"LLM classification failed: {e}")
+        return None
+
+
 CONTACT_PAGE_SUFFIXES = [
     '/contact', '/nous-contacter', '/contactez-nous',
     '/mentions-legales', '/a-propos', '/qui-sommes-nous',
@@ -209,8 +187,12 @@ CONTACT_PAGE_SUFFIXES = [
 
 
 def _scrape_page(url, headers):
-    """Scrape a single page via Firecrawl (full content, no main-only filter)."""
+    """Scrape a single page via Firecrawl. Respects global semaphore for rate limiting."""
     payload = {'url': url}
+    sem = _firecrawl_semaphore
+
+    if sem:
+        sem.acquire()
     try:
         resp = call_with_retry(
             lambda: requests.post(
@@ -222,35 +204,44 @@ def _scrape_page(url, headers):
         if resp.status_code == 200:
             data = resp.json()
             return data.get('data', {}).get('markdown', '') or data.get('data', {}).get('content', '')
+        raise CrawlError(f"Firecrawl returned {resp.status_code} for {url}")
+    except CrawlError:
+        raise
     except Exception as e:
-        print(f"    Scrape error on {url}: {str(e)[:50]}")
-    return ''
+        raise CrawlError(f"Scrape failed for {url}: {str(e)[:80]}")
+    finally:
+        if sem:
+            sem.release()
 
 
 def _find_emails_deep(base_url, headers):
     """
     Crawl the main page + common contact/legal pages to find emails.
     Returns all unique emails found across pages.
+    Raises CrawlError if the homepage itself fails (retryable at caller level).
     """
     all_emails = []
 
-    # 1) Scrape homepage (full content including footer)
-    print(f"    Crawling homepage...")
+    # 1) Scrape homepage — CrawlError propagates to caller for retry
+    _safe_print(f"    Crawling homepage...")
     homepage_content = _scrape_page(base_url, headers)
     all_emails.extend(extract_emails(homepage_content))
 
     if all_emails:
         return all_emails, homepage_content
 
-    # 2) No emails on homepage — try contact/legal pages
+    # 2) No emails on homepage — try contact/legal pages (tolerant of failures)
     from urllib.parse import urlparse
     parsed = urlparse(base_url)
     base = f"{parsed.scheme}://{parsed.netloc}"
 
     for suffix in CONTACT_PAGE_SUFFIXES:
         page_url = base + suffix
-        print(f"    Crawling {page_url}...")
-        content = _scrape_page(page_url, headers)
+        _safe_print(f"    Crawling {page_url}...")
+        try:
+            content = _scrape_page(page_url, headers)
+        except CrawlError:
+            continue
         if content:
             found = extract_emails(content)
             if found:
@@ -264,8 +255,11 @@ def _find_emails_deep(base_url, headers):
 
 def qualify_website(url, industry=''):
     """
-    Use Firecrawl to scrape and LLM to qualify a website.
+    Use Firecrawl to scrape + LLM (with keyword fallback) to qualify a website.
     Crawls multiple pages (homepage + contact/legal) to find emails.
+
+    Raises CrawlError if the crawl fails (network/API), so the caller can retry.
+    Returns a normal dict (with Business_Type) for legitimate classification results.
     """
 
     if not url or url == '':
@@ -284,106 +278,149 @@ def qualify_website(url, industry=''):
     if not url.startswith(('http://', 'https://')):
         url = f'https://{url}'
 
-    print(f"  Checking: {url}")
+    _safe_print(f"  Checking: {url}")
 
-    try:
-        headers = {
-            'Authorization': f'Bearer {FIRECRAWL_API_KEY}',
-            'Content-Type': 'application/json'
-        }
+    headers = {
+        'Authorization': f'Bearer {FIRECRAWL_API_KEY}',
+        'Content-Type': 'application/json'
+    }
 
-        emails, content = _find_emails_deep(url, headers)
-        email = emails[0] if emails else ''
+    # CrawlError from _find_emails_deep propagates to caller for retry
+    emails, content = _find_emails_deep(url, headers)
+    email = emails[0] if emails else ''
 
-        if not content:
-            print(f"    Website unreachable")
-            return {
-                'Email_Generique': '',
-                'Ecommerce': 'Non',
-                'Business_Type': 'Unknown',
-                'Confidence': 0,
-                'Justification': '',
-                'Tech_Stack': 'unknown'
-            }
-
-        sleep_between_calls(0.5, label="Firecrawl→Anthropic")
-
-        classification = classify_with_llm(content, url, industry)
-
-        ecommerce = classification['ecommerce']
-        business_type = classification['business_type']
-        confidence = classification['confidence']
-        justification = classification['justification']
-        tech_stack = classification['tech_stack']
-
-        print(f"    Active | Email: {email or 'None'} | E-commerce: {ecommerce} | Type: {business_type} ({confidence}%)")
-        if justification:
-            print(f"    Reason: {justification}")
-
-        return {
-            'Email_Generique': email,
-            'Ecommerce': ecommerce,
-            'Business_Type': business_type,
-            'Confidence': confidence,
-            'Justification': justification,
-            'Tech_Stack': tech_stack
-        }
-
-    except Exception as e:
-        print(f"    Error: {str(e)[:50]}")
+    if not content:
+        _safe_print(f"    Website unreachable")
         return {
             'Email_Generique': '',
             'Ecommerce': 'Non',
             'Business_Type': 'Unknown',
             'Confidence': 0,
-            'Justification': '',
+            'Justification': 'Website unreachable after crawl',
             'Tech_Stack': 'unknown'
         }
 
+    classification = classify_with_llm(content, url, industry)
+    if classification is None:
+        classification = classify_business(content, url)
 
-def process_leads(input_file, industry=''):
-    """Process all leads and qualify their websites
+    ecommerce = classification['ecommerce']
+    business_type = classification['business_type']
+    confidence = classification['confidence']
+    justification = classification['justification']
+    tech_stack = classification['tech_stack']
+
+    _safe_print(f"    Active | Email: {email or 'None'} | E-commerce: {ecommerce} | Type: {business_type} ({confidence}%)")
+    if justification:
+        _safe_print(f"    Reason: {justification}")
+
+    return {
+        'Email_Generique': email,
+        'Ecommerce': ecommerce,
+        'Business_Type': business_type,
+        'Confidence': confidence,
+        'Justification': justification,
+        'Tech_Stack': tech_stack
+    }
+
+
+MAX_CRAWL_RETRIES = 2
+CRAWL_RETRY_DELAY = 5
+
+
+def _qualify_single_lead(index, lead, total, industry=''):
+    """
+    Qualify one lead with retry on CrawlError.
+    Returns (lead, is_qualified, filter_reason).
+    """
+    name = lead.get('Nom_Entreprise', 'Unknown')
+    _safe_print(f"[{index}/{total}] {name}")
+
+    qualification = None
+    last_err = None
+
+    for attempt in range(1, MAX_CRAWL_RETRIES + 2):
+        try:
+            qualification = qualify_website(lead.get('Site_Web', ''), industry=industry)
+            break
+        except CrawlError as e:
+            last_err = e
+            if attempt <= MAX_CRAWL_RETRIES:
+                _safe_print(f"    Crawl error (attempt {attempt}/{MAX_CRAWL_RETRIES + 1}), retrying in {CRAWL_RETRY_DELAY}s...")
+                sleep(CRAWL_RETRY_DELAY)
+            else:
+                _safe_print(f"    Crawl failed after {attempt} attempts: {str(e)[:60]}")
+
+    if qualification is None:
+        qualification = {
+            'Email_Generique': '',
+            'Ecommerce': 'Non',
+            'Business_Type': 'Unknown',
+            'Confidence': 0,
+            'Justification': f'Crawl error: {str(last_err)[:80]}',
+            'Tech_Stack': 'unknown'
+        }
+
+    lead.update(qualification)
+
+    business_type = qualification.get('Business_Type')
+    if business_type == 'Manufacturer':
+        return lead, True, None
+
+    reason = "Service provider (not manufacturer)" if business_type == 'Service' else "Business type unclear"
+    _safe_print(f"    Filtered out: {reason}")
+    return lead, False, reason
+
+
+def process_leads(input_file, workers=3, industry=''):
+    """Process all leads and qualify their websites in parallel.
 
     Args:
         input_file: Path to JSON file with scraped leads
-        industry: Industry context for LLM classification
+        workers: Number of parallel workers (default 3)
+        industry: Target industry for LLM context
     """
+    global _firecrawl_semaphore
+    _firecrawl_semaphore = threading.Semaphore(workers)
 
-    # Load leads from JSON
     with open(input_file, 'r', encoding='utf-8') as f:
         leads = json.load(f)
 
-    print(f"Processing {len(leads)} leads (LLM classification)...\n")
+    mode = "LLM classification" if ANTHROPIC_API_KEY else "keyword classification"
+    total = len(leads)
+    print(f"Processing {total} leads ({mode}, {workers} workers)...\n")
 
     qualified_leads = []
     filtered_count = 0
+    error_count = 0
 
-    for i, lead in enumerate(leads, 1):
-        print(f"[{i}/{len(leads)}] {lead.get('Nom_Entreprise', 'Unknown')}")
-
-        # Qualify the website with LLM classification
-        qualification = qualify_website(lead.get('Site_Web', ''), industry=industry)
-
-        # Update lead with qualification data
-        lead.update(qualification)
-
-        # FILTER: Keep manufacturers/sellers regardless of e-commerce capability
-        business_type = qualification.get('Business_Type')
-
-        if business_type == 'Manufacturer':
-            qualified_leads.append(lead)
-        else:
-            filtered_count += 1
-            if business_type == 'Service':
-                print(f"    Filtered out: Service provider (not manufacturer)")
+    if workers <= 1:
+        for i, lead in enumerate(leads, 1):
+            lead, is_qualified, reason = _qualify_single_lead(i, lead, total, industry=industry)
+            if is_qualified:
+                qualified_leads.append(lead)
             else:
-                print(f"    Filtered out: Business type unclear")
+                filtered_count += 1
+                if reason and 'Crawl error' in (lead.get('Justification') or ''):
+                    error_count += 1
+    else:
+        futures = {}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for i, lead in enumerate(leads, 1):
+                future = executor.submit(_qualify_single_lead, i, lead, total, industry=industry)
+                futures[future] = i
 
-        # Rate limiting - be nice to the APIs
-        sleep(1)
+            for future in as_completed(futures):
+                lead, is_qualified, reason = future.result()
+                if is_qualified:
+                    qualified_leads.append(lead)
+                else:
+                    filtered_count += 1
+                    if lead.get('Justification', '').startswith('Crawl error'):
+                        error_count += 1
 
-    print(f"\nQualification complete: {len(qualified_leads)}/{len(leads)} manufacturer/seller leads")
-    print(f"Filtered out: {filtered_count} leads (service providers or unclear type)")
+    print(f"\nQualification complete: {len(qualified_leads)}/{total} manufacturer/seller leads")
+    print(f"Filtered out: {filtered_count} leads ({error_count} crawl errors, {filtered_count - error_count} service/unclear)")
 
     return qualified_leads
 
@@ -401,9 +438,10 @@ def save_results(leads, output_filename='qualified_leads.json'):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Qualify websites using Firecrawl + LLM')
+    parser = argparse.ArgumentParser(description='Qualify websites using Firecrawl + keyword analysis')
     parser.add_argument('--input', required=True, help='Input JSON file from scraping step')
-    parser.add_argument('--industry', default='', help='Industry context for better LLM classification')
+    parser.add_argument('--industry', default='', help='Target industry for LLM classification context')
+    parser.add_argument('--workers', type=int, default=3, help='Number of parallel workers (default: 3, use 1 for sequential)')
 
     args = parser.parse_args()
 
@@ -413,16 +451,13 @@ def main():
         print(f"Input file not found: {input_path}")
         return
 
-    # Check API keys
     print(f"API Keys status:")
     print(f"   - FIRECRAWL_API_KEY: {'Configured' if FIRECRAWL_API_KEY else 'Missing'}")
     print(f"   - ANTHROPIC_API_KEY: {'Configured (LLM mode)' if ANTHROPIC_API_KEY else 'Missing (keyword fallback)'}")
     print()
 
-    # Process leads
-    qualified_leads = process_leads(input_path, industry=args.industry)
+    qualified_leads = process_leads(input_path, workers=args.workers, industry=args.industry)
 
-    # Save results
     output_path = save_results(qualified_leads)
 
     print(f"\nStep 2 complete")

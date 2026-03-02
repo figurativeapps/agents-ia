@@ -94,7 +94,7 @@ def generate_pdf(company_data, template_name='plaquette_base.html', output_dir=N
         'company_name': company_data.get('Nom_Entreprise', 'Votre Entreprise'),
         'contact_name': company_data.get('Nom_Decideur', 'Cher Client'),
         'industry': company_data.get('Industrie', ''),
-        'city': company_data.get('Ville', ''),
+        'city': company_data.get('Pays', ''),
         'phone': company_data.get('Tel_Standard', ''),
         'website': company_data.get('Site_Web', ''),
         'generation_date': datetime.now().strftime('%d/%m/%Y'),

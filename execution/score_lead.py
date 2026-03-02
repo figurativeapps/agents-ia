@@ -78,7 +78,7 @@ def compute_data_score(lead):
         score += 5
     if lead.get('Site_Web'):
         score += 5
-    if lead.get('Adresse') and lead.get('Ville'):
+    if lead.get('Adresse') and lead.get('Pays'):
         score += 5
     if lead.get('Industrie'):
         score += 5
@@ -119,7 +119,7 @@ def score_with_llm(lead, industry=''):
 Entreprise: {lead.get('Nom_Entreprise', 'N/A')}
 Site web: {lead.get('Site_Web', 'N/A')}
 Industrie: {lead.get('Industrie', 'N/A')}
-Ville: {lead.get('Ville', 'N/A')}
+Pays: {lead.get('Pays', 'N/A')}
 Type: {lead.get('Business_Type', 'N/A')}
 E-commerce: {lead.get('Ecommerce', 'N/A')}
 Tech stack: {lead.get('Tech_Stack', 'N/A')}

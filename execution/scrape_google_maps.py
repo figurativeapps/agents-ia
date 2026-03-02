@@ -39,14 +39,30 @@ from api_utils import call_with_retry, save_tracker_snapshot
 SERPER_API_KEY = os.getenv('SERPER_API_KEY')
 
 
-def search_google_maps(query, location, max_results=50):
+def _build_manufacturer_query(industry, country):
+    """
+    Build a search query that targets manufacturers/constructors who sell products.
+    Automatically prepends 'fabricant' to avoid returning service providers.
+    """
+    industry_lower = industry.lower()
+    already_targeted = any(kw in industry_lower for kw in [
+        'fabricant', 'constructeur', 'manufacturer', 'vendeur', 'vente',
+        'distributeur', 'revendeur', 'fournisseur'
+    ])
+    if already_targeted:
+        return f"{industry} {country}"
+    return f"fabricant {industry} {country}"
+
+
+def search_google_maps(query, location, max_results=50, query_override=None):
     """
     Search Google Maps using Serper API
 
     Args:
         query: Business type to search for (e.g., "Cuisinistes")
-        location: Geographic location (e.g., "Bordeaux")
+        location: Country (e.g., "France")
         max_results: Maximum number of results to return
+        query_override: Raw search query (skips auto-build if provided)
 
     Returns:
         List of business dictionaries
@@ -55,13 +71,14 @@ def search_google_maps(query, location, max_results=50):
     if not SERPER_API_KEY:
         raise ValueError("❌ SERPER_API_KEY not found in .env file")
 
-    print(f"🔍 Searching for: {query} in {location}")
+    search_query = query_override if query_override else _build_manufacturer_query(query, location)
+    print(f"🔍 Searching for: {search_query}")
 
     url = "https://google.serper.dev/maps"
 
     payload = json.dumps({
-        "q": f"{query} {location}",
-        "num": min(max_results, 100)  # Serper max is 100 per request
+        "q": search_query,
+        "num": min(max_results, 100)
     })
 
     headers = {
@@ -92,9 +109,8 @@ def search_google_maps(query, location, max_results=50):
             lead = {
                 'Nom_Entreprise': place.get('title', ''),
                 'Adresse': address,
-                'Ville': location,
                 'Code_Postal': extract_postal_code(address),
-                'Pays': extract_country(address),
+                'Pays': location,
                 'Site_Web': place.get('website', ''),
                 'Tel_Standard': place.get('phoneNumber', ''),
                 'Date_Ajout': datetime.now().strftime('%Y-%m-%d'),
@@ -112,6 +128,99 @@ def search_google_maps(query, location, max_results=50):
 
     except Exception as e:
         print(f"❌ Error during API request: {e}")
+        return []
+
+
+def search_google_web(query, location, max_results=20, query_override=None):
+    """
+    Search Google Web (organic results) via Serper /search endpoint.
+    Captures manufacturers that don't have a Google Maps listing
+    (e.g. large multi-product companies like Novellini).
+
+    Returns leads in the same format as search_google_maps().
+    """
+    if not SERPER_API_KEY:
+        raise ValueError("SERPER_API_KEY not found in .env file")
+
+    search_query = query_override if query_override else _build_manufacturer_query(query, location)
+    print(f"🌐 Web search: {search_query}")
+
+    url = "https://google.serper.dev/search"
+    payload = json.dumps({
+        "q": search_query,
+        "gl": "fr",
+        "hl": "fr",
+        "num": min(max_results, 100)
+    })
+    headers = {
+        'X-API-KEY': SERPER_API_KEY,
+        'Content-Type': 'application/json'
+    }
+
+    try:
+        response = call_with_retry(
+            lambda: requests.post(url, headers=headers, data=payload, timeout=30),
+            label="Serper Web"
+        )
+        if response.status_code != 200:
+            print(f"❌ Serper Web API error: {response.status_code}")
+            return []
+
+        data = response.json()
+        organic = data.get('organic', [])
+        print(f"✅ Found {len(organic)} web results")
+
+        leads = []
+        seen_domains = set()
+        for item in organic:
+            link = item.get('link', '')
+            if not link:
+                continue
+
+            from urllib.parse import urlparse
+            parsed = urlparse(link)
+            domain = parsed.netloc.lower().replace('www.', '')
+
+            # Skip duplicates, social media, directories, and marketplaces
+            skip_domains = [
+                'facebook.com', 'instagram.com', 'linkedin.com', 'twitter.com',
+                'youtube.com', 'pinterest.com', 'tiktok.com',
+                'pagesjaunes.fr', 'societe.com', 'kompass.com', 'europages.fr',
+                'amazon.fr', 'cdiscount.com', 'leboncoin.fr', 'manomano.fr',
+                'wikipedia.org', 'google.com',
+            ]
+            if domain in seen_domains or any(sd in domain for sd in skip_domains):
+                continue
+            seen_domains.add(domain)
+
+            title = item.get('title', '')
+            # Clean title: remove common suffixes
+            for suffix in [' - Accueil', ' | Accueil', ' - Home', ' | Home', ' - Site officiel']:
+                if title.endswith(suffix):
+                    title = title[:-len(suffix)]
+
+            lead = {
+                'Nom_Entreprise': title.strip(),
+                'Adresse': '',
+                'Code_Postal': '',
+                'Pays': location,
+                'Site_Web': f"{parsed.scheme}://{parsed.netloc}",
+                'Tel_Standard': '',
+                'Date_Ajout': datetime.now().strftime('%Y-%m-%d'),
+                'Email_Generique': '',
+                'Email_Decideur': '',
+                'Nom_Decideur': '',
+                'Poste_Decideur': '',
+                'LinkedIn_URL': '',
+                'Ecommerce': '',
+                '_source': 'web',
+            }
+            leads.append(lead)
+
+        return leads
+
+    except Exception as e:
+        print(f"❌ Web search error: {e}")
         return []
 
 
@@ -195,11 +304,15 @@ def main():
     parser.add_argument('--industry', required=True, help='Industry/business type (e.g., "Cuisinistes")')
     parser.add_argument('--location', required=True, help='Location to search (e.g., "Bordeaux")')
     parser.add_argument('--max_leads', type=int, default=50, help='Maximum number of leads to fetch')
+    parser.add_argument('--query-override', help='Use this exact search query instead of auto-building')
+    parser.add_argument('--source', choices=['maps', 'web'], default='maps', help='Search source: maps (default) or web')
 
     args = parser.parse_args()
 
-    # Search Google Maps
-    leads = search_google_maps(args.industry, args.location, args.max_leads)
+    if args.source == 'web':
+        leads = search_google_web(args.industry, args.location, args.max_leads, query_override=args.query_override)
+    else:
+        leads = search_google_maps(args.industry, args.location, args.max_leads, query_override=args.query_override)
 
     if leads:
         # Add cleaned industry to each lead

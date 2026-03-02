@@ -9,6 +9,7 @@ import json
 import time
 import logging
 import email.utils
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -147,13 +148,18 @@ for hs_tool in ["HubSpot company-search", "HubSpot company-create",
 
 
 class APITracker:
-    """Tracks API calls, successes, 429s, errors across the pipeline."""
+    """Tracks API calls, successes, 429s, errors across the pipeline. Thread-safe."""
 
     def __init__(self):
         self.calls = {}  # label -> {total, success, rate_limited, errors, first_429_at}
+        self._lock = threading.Lock()
 
     def record(self, label, status_code=200, is_retry=False):
-        """Record an API call result."""
+        """Record an API call result (thread-safe)."""
+        with self._lock:
+            self._record_unlocked(label, status_code, is_retry)
+
+    def _record_unlocked(self, label, status_code=200, is_retry=False):
         if label not in self.calls:
             self.calls[label] = {
                 "total": 0,

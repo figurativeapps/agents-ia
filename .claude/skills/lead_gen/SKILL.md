@@ -1,14 +1,16 @@
 ---
 name: lead_gen
-description: "Pipeline de génération de leads B2B : scrape Google Maps via Serper, qualifie les sites web via LLM + deep crawl (email de contact), enrichit les contacts via OSINT (nom/titre/LinkedIn), score les leads par LLM, et synchronise vers HubSpot CRM. USE WHEN: l'utilisateur demande des leads, du scraping, de l'enrichissement, des prospects, une sync HubSpot, des entreprises Google Maps, une recherche par industrie ou de la découverte de contacts."
+description: "Pipeline de génération de leads B2B : scrape Google Maps via Serper, qualifie les sites web via deep crawl + analyse keywords (email de contact), enrichit les contacts via OSINT (nom/titre/LinkedIn), et synchronise vers HubSpot CRM. USE WHEN: l'utilisateur demande des leads, du scraping, de l'enrichissement, des prospects, une sync HubSpot, des entreprises Google Maps, une recherche par industrie ou de la découverte de contacts."
 ---
 
 # Skill: Lead_gen — Lead Generation B2B
 
-## Inputs requis
-- `industry` (ex: "Cuisinistes")
-- `location` (ex: "Bordeaux")
-- `max_leads` (ex: 50)
+## Inputs requis (3 elements uniquement)
+- `max_leads` — nombre de leads (ex: 5, 50)
+- `industry` — industrie cible (ex: "Saunas", "Cuisinistes", "Jacuzzis")
+- `country` — pays (ex: "France", "Belgique")
+
+La requete Google Maps est auto-reformulee pour cibler les **fabricants/constructeurs qui vendent des produits**. Le mot "fabricant" est automatiquement prepend a l'industrie. L'utilisateur n'a pas besoin de le preciser.
 
 Si l'utilisateur ne fournit pas tous les inputs, les lui demander avant de commencer.
 
@@ -16,19 +18,28 @@ Si l'utilisateur ne fournit pas tous les inputs, les lui demander avant de comme
 
 ## Pipeline séquentiel
 
-### Etape 1 : Scraping Google Maps
-- **Script :** `execution/scrape_google_maps.py`
-- **Input :** `--industry "{industry}" --location "{location}" --max_leads {max_leads}`
-- **Output :** `.tmp/google_maps_results.json`
+### Etapes 1+1b : Scraping + Dedup + Expansion automatique
+- **Scripts :** `execution/scrape_google_maps.py` + `execution/dedup.py`
+- **Orchestre par :** `run_pipeline.py` (boucle d'expansion)
+- **Output :** `.tmp/google_maps_results.json` (leads uniques, prets pour qualification)
+- **Comportement :**
+  1. Scrape initial avec requete "fabricant {industry} {country}"
+  2. Dedup intra-batch (fuzzy nom 82% + domaine exact) + dedup vs HubSpot (bulk fetch)
+  3. Si moins de leads que demande → **expansion automatique** : essaie des queries alternatives (synonymes, termes individuels, regions)
+  4. Boucle jusqu'a atteindre le nombre de leads demande ou avoir epuise toutes les variantes
+- **Queries d'expansion (2 sources) :**
+  - **Google Maps** (`/maps`) : constructeur/fournisseur/vendeur + termes individuels + regions (Ile-de-France, PACA, etc.)
+  - **Google Web** (`/search`) : recherche organique pour capter les grands fabricants multi-produits absents de Maps (ex: Novellini, Grohe). Filtre auto les reseaux sociaux, annuaires et marketplaces.
+- **Rate limit :** Si Serper renvoie un 429, le pipeline se met en **pause** (state sauvegarde dans `.tmp/pipeline_state.json`)
+- **Resume :** `python run_pipeline.py --resume --industry "..." --country "..." --max_leads N`
 
-### Etape 2 : Qualification des sites (LLM + Deep Crawl)
+### Etape 2 : Qualification des sites (Deep Crawl + Keywords)
 - **Script :** `execution/qualify_site.py`
-- **Input :** `.tmp/google_maps_results.json --industry "{industry}"`
+- **Input :** `.tmp/google_maps_results.json`
 - **Output :** `.tmp/qualified_leads.json`
-- **Action :** Deep crawl (homepage + pages contact/mentions légales), extraction email de contact du site, classification LLM (Manufacturer/Service/Unknown), détection e-commerce, détection tech stack
+- **Action :** Deep crawl (homepage + pages contact/mentions légales), extraction email de contact du site, classification par keywords (Manufacturer/Service/Unknown), détection e-commerce
 - **Email :** L'email de contact trouvé sur le site est stocké dans `Email_Generique` — c'est l'email principal utilisé pour HubSpot
 - **Filtre :** Garde uniquement Business_Type=Manufacturer (e-commerce non requis)
-- **Fallback :** Si ANTHROPIC_API_KEY absent, utilise la classification par keywords
 
 ### Etape 3 : Enrichissement (OSINT)
 - **Script :** `execution/enrich.py`
@@ -36,22 +47,16 @@ Si l'utilisateur ne fournit pas tous les inputs, les lui demander avant de comme
 - **Action :** Recherche OSINT via Serper pour trouver le nom du décideur, son poste et son profil LinkedIn
 - **Note :** L'email de contact provient du site web (étape 2). L'enrichissement ne cherche PAS d'email.
 
-### Etape 3b : Scoring LLM
-- **Script :** `execution/score_lead.py`
-- **Input :** `.tmp/enriched_leads.json --industry "{industry}"`
-- **Action :** Score chaque lead 0-100 via Claude Haiku, classe en Hot/Warm/Cold
-- **Critères :** Fit ICP (40%) + Complétude données (30%) + Qualité site (20%) + Confiance (10%)
-- **Fallback :** Si ANTHROPIC_API_KEY absent, scoring déterministe
-
 ### Etape 4 : Sync HubSpot (mode par defaut)
 - **Script :** `execution/sync_hubspot.py`
 - **Logique Upsert :**
-  1. Chercher contact par email (anti-duplication)
-  2. Si existe -> Mettre à jour champs manquants
-  3. Si n'existe pas -> Créer contact + entreprise associée
+  1. Chercher contact par email (anti-duplication primaire)
+  2. Si pas d'email → fallback recherche par nom d'entreprise / domaine web (anti-duplication secondaire)
+  3. Si existe -> Mettre à jour champs manquants
+  4. Si n'existe pas -> Créer contact + entreprise associée
 - **Email synced :** `Email_Generique` (email de contact du site web)
 - **Log :** `.tmp/sync_log_YYYYMMDD_HHMMSS.json`
-- **Jamais de doublons**
+- **Triple anti-doublon :** dedup batch (etape 1b) + dedup HubSpot (etape 1b) + upsert email/company (etape 4)
 
 ### Etape 5 : Backup Excel (automatique apres sync)
 - **Script :** `execution/save_to_excel.py --backup-mode`
@@ -59,6 +64,19 @@ Si l'utilisateur ne fournit pas tous les inputs, les lui demander avant de comme
 - **Email vide :** Affiché comme "Non renseigné" dans l'Excel
 - **IMPORTANT :** Demander à l'utilisateur de fermer le fichier Excel avant exécution
 - Desactivable avec `--no-backup`
+
+### Pause / Resume automatique (rate limit)
+- Si une API atteint son quota (429), le pipeline **se met en pause** automatiquement
+- L'etat complet est sauvegarde dans `.tmp/pipeline_state.json` (etapes completees, leads accumules, queries essayees)
+- Resume manuel : `python run_pipeline.py --resume --industry "..." --country "..." --max_leads N`
+- Resume automatique : `pipeline_watcher.py` sur VPS (voir ci-dessous)
+
+### VPS Watcher (resume automatique)
+- **Script :** `execution/pipeline_watcher.py`
+- **Deploiement :** Cron sur VPS, verifie 1x/jour si une pipeline est en pause
+- **Logique :** Teste l'API bloquee → si disponible, relance `run_pipeline.py --resume`
+- **Cron :** `0 6 * * * cd /path/to/agents_ia && python execution/pipeline_watcher.py --mode once >> /var/log/pipeline_watcher.log 2>&1`
+- **Mode continu :** `python pipeline_watcher.py --mode poll --interval 86400`
 
 ### Mode alternatif : Excel d'abord (ancien workflow)
 - Ajouter `--use-excel` au pipeline pour utiliser l'ancien flow : Excel -> HubSpot
@@ -68,17 +86,23 @@ Si l'utilisateur ne fournit pas tous les inputs, les lui demander avant de comme
 ## Commandes utiles
 
 ```bash
-# Pipeline complet (defaut)
-python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50
+# Pipeline complet (defaut, 3 workers paralleles)
+python execution/run_pipeline.py --industry "Saunas" --country "France" --max_leads 50
 
-# Sans backup Excel
-python execution/run_pipeline.py --industry "Cuisinistes" --location "Bordeaux" --max_leads 50 --no-backup
+# Pipeline sequentiel (1 worker, safe pour free tier Firecrawl)
+python execution/run_pipeline.py --industry "Cuisinistes" --country "France" --max_leads 50 --workers 1
+
+# Resume apres pause rate limit
+python execution/run_pipeline.py --resume --industry "Saunas" --country "France" --max_leads 5
+
+# VPS watcher (single check)
+python execution/pipeline_watcher.py --mode once
 
 # Scripts individuels
-python execution/scrape_google_maps.py --industry "Restaurants" --location "Paris"
-python execution/qualify_site.py --input .tmp/google_maps_results.json --industry "Restaurants"
+python execution/scrape_google_maps.py --industry "Saunas" --location "France"
+python execution/dedup.py --input .tmp/google_maps_results.json
+python execution/qualify_site.py --input .tmp/google_maps_results.json --workers 3
 python execution/enrich.py --input .tmp/qualified_leads.json
-python execution/score_lead.py --input .tmp/enriched_leads.json --industry "Restaurants"
 python execution/sync_hubspot.py --input .tmp/enriched_leads.json --write-log
 ```
 
@@ -91,7 +115,6 @@ python execution/sync_hubspot.py --input .tmp/enriched_leads.json --write-log
 | `SERPER_API_KEY` | Oui | Scraping Google Maps + OSINT LinkedIn |
 | `FIRECRAWL_API_KEY` | Oui | Deep crawl sites web (qualification + extraction email) |
 | `HUBSPOT_API_KEY` | Oui | Sync CRM |
-| `ANTHROPIC_API_KEY` | Recommandé | Qualification LLM + Scoring LLM |
 
 ---
 
@@ -100,21 +123,21 @@ python execution/sync_hubspot.py --input .tmp/enriched_leads.json --write-log
 | Script | Function | Input → Output |
 |--------|----------|----------------|
 | `execution/scrape_google_maps.py` | Search businesses via Serper | Query → `.tmp/google_maps_results.json` |
-| `execution/qualify_site.py` | Deep crawl + LLM classification + email extraction | URL → `.tmp/qualified_leads.json` |
+| `execution/dedup.py` | Dedup intra-batch + vs HubSpot (bulk fetch) | JSON → JSON (doublons retires) |
+| `execution/qualify_site.py` | Deep crawl + keyword classification + email extraction | URL → `.tmp/qualified_leads.json` |
 | `execution/enrich.py` | OSINT via Serper (nom décideur, titre, LinkedIn) | Company → `.tmp/enriched_leads.json` |
-| `execution/score_lead.py` | LLM-based ICP scoring (0-100, Hot/Warm/Cold) | Lead data → Score/Priority |
 | `execution/sync_hubspot.py` | Push leads to HubSpot (upsert, default) | JSON → HubSpot CRM + sync log |
 | `execution/save_to_excel.py` | Save leads to Excel (backup or `--use-excel`) | Data → `Generate_leads.xlsx` |
 | `execution/sync_from_hubspot.py` | Pull updates from HubSpot (Excel mode only) | HubSpot → Excel |
 | `execution/watch_lead_status.py` | Two-phase prospection watcher | HubSpot ↔ ClickUp ↔ R2 |
-| `execution/run_pipeline.py` | Master pipeline orchestrator | Args → Full pipeline |
+| `execution/pipeline_watcher.py` | VPS cron: resume paused pipelines | State → API test → Resume |
+| `execution/run_pipeline.py` | Master pipeline orchestrator (expansion + pause/resume) | Args → Full pipeline |
 
 ---
 
 ## Garde-fous
 - Ne jamais scraper sans input `industry` + `location`
 - Ne jamais push vers HubSpot sans vérification Upsert
-- Le pipeline fonctionne avec les clés minimales (Serper + Firecrawl + HubSpot)
-- Chaque étape optionnelle a un fallback si la clé API est absente
+- Le pipeline fonctionne avec 3 clés API (Serper + Firecrawl + HubSpot)
 - Si un script échoue, lire l'erreur, corriger, réessayer (self-anneal)
 - Les fichiers `.tmp/` sont temporaires — les supprimer après usage

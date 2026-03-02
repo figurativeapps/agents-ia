@@ -14,7 +14,7 @@ def create_excel_template():
         'Industrie',           # Industry/sector (e.g., "Cuisinistes")
         'Nom_Entreprise',      # Company name
         'Adresse',             # Full address
-        'Ville',               # City
+        'Pays',                # Country
         'Code_Postal',         # Postal code
         'Site_Web',            # Website URL
         'Tel_Standard',        # Main phone number (from Google Maps)
@@ -52,7 +52,7 @@ def create_excel_template():
             'A': 20,  # Industrie
             'B': 30,  # Nom_Entreprise
             'C': 40,  # Adresse
-            'D': 20,  # Ville
+            'D': 20,  # Pays
             'E': 12,  # Code_Postal
             'F': 35,  # Site_Web
             'G': 18,  # Tel_Standard
