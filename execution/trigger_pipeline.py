@@ -89,15 +89,19 @@ def cmd_run(args):
         f'{resume_flag}'
     ).strip()
 
-    # Single SSH: deploy + kill old process + launch new
-    print("Deploying and launching on VPS...")
+    import time
+
+    print("[1/2] Deploy (git pull + pip)...")
+    ssh(f"cd {VPS_PATH} && git pull && {VPS_PIP} install -r requirements.txt -q 2>&1 | tail -3")
+
+    time.sleep(2)
+
+    print("[2/2] Launching pipeline...")
     ssh(
-        f'cd {VPS_PATH} && '
-        f'git pull && '
-        f'{VPS_PIP} install -r requirements.txt -q 2>&1 | tail -3 && '
-        f'pkill -f "run_pipeline.py" 2>/dev/null; sleep 1; '
-        f'mkdir -p .tmp && '
-        f'nohup {pipeline_cmd} > {LOG_FILE} 2>&1 &'
+        f"cd {VPS_PATH} && pkill -f run_pipeline.py 2>/dev/null; "
+        f"mkdir -p .tmp && "
+        f"nohup {pipeline_cmd} > {LOG_FILE} 2>&1 &",
+        check=False
     )
 
     print(f"\n{'='*60}")
