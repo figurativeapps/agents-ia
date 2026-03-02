@@ -203,7 +203,11 @@ def _fetch_firecrawl_usage():
 
 
 def _fetch_anthropic_cost():
-    """Fetch total cost from Anthropic console page (via Admin API if available)."""
+    """Fetch total cost from Anthropic Admin API (cost_report endpoint).
+
+    Requires ANTHROPIC_ADMIN_KEY (sk-ant-admin...) in .env.
+    Amount is returned in cents — divide by 100 for dollars.
+    """
     admin_key = os.getenv("ANTHROPIC_ADMIN_KEY", "")
     if not admin_key:
         return None
@@ -211,19 +215,22 @@ def _fetch_anthropic_cost():
     if _provider_cache["anthropic"] and now - _provider_cache["anthropic_ts"] < _CACHE_TTL:
         return _provider_cache["anthropic"]
     try:
-        today = datetime.now().strftime("%Y-%m-%d")
-        month_start = datetime.now().strftime("%Y-%m-01")
+        month_start = datetime.now().strftime("%Y-%m-01T00:00:00Z")
+        now_str = datetime.now().strftime("%Y-%m-%dT23:59:59Z")
         resp = requests.get(
             "https://api.anthropic.com/v1/organizations/cost_report",
             headers={"x-api-key": admin_key, "anthropic-version": "2023-06-01"},
-            params={"start_date": month_start, "end_date": today,
-                    "bucket_size": "none"},
+            params={"starting_at": month_start, "ending_at": now_str,
+                    "bucket_width": "1d"},
             timeout=10,
         )
         if resp.status_code == 200:
             data = resp.json()
-            total = sum(b.get("cost_usd", 0) for b in data.get("data", []))
-            result = {"cost_usd": round(total, 4)}
+            total_cents = 0.0
+            for bucket in data.get("data", []):
+                for item in bucket.get("results", []):
+                    total_cents += float(item.get("amount", "0"))
+            result = {"cost_usd": round(total_cents / 100, 4)}
             _provider_cache["anthropic"] = result
             _provider_cache["anthropic_ts"] = now
             return result
