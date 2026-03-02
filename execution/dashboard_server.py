@@ -34,6 +34,7 @@ PYTHON = sys.executable
 PIPELINE_SCRIPT = Path(__file__).parent / "run_pipeline.py"
 LOG_FILE = TMP_DIR / "pipeline_output.log"
 STATE_FILE = TMP_DIR / "pipeline_state.json"
+PROGRESS_FILE = TMP_DIR / "pipeline_progress.json"
 
 PIPELINE_STEPS = [
     "step1_expand",
@@ -102,35 +103,53 @@ def _count_leads(filename: str) -> int:
 @app.get("/api/status")
 def get_status():
     state = _read_json(STATE_FILE) or {}
+    progress = _read_json(PROGRESS_FILE) or {}
     pid = _is_pipeline_running()
 
+    # Status from progress file (multi-country aware)
     if pid:
         effective_status = "running"
+    elif progress.get("status") == "paused":
+        effective_status = "paused"
+    elif progress.get("status") == "completed":
+        effective_status = "completed"
     elif state.get("status") == "paused":
         effective_status = "paused"
-    elif state.get("status") == "running":
+    elif progress.get("status") == "running" or state.get("status") == "running":
         effective_status = "finished"
     else:
         effective_status = "idle"
 
+    # Per-country step tracking from the per-country state file
     steps_completed = state.get("steps_completed", [])
     current_step_idx = len(steps_completed)
+
+    # Multi-country data from progress file
+    countries = progress.get("countries", [])
+    countries_done = progress.get("countries_done", [])
+    countries_results = progress.get("countries_results", {})
+    total_leads_all = progress.get("total_leads", 0)
 
     return {
         "status": effective_status,
         "pid": pid,
-        "industry": state.get("industry", ""),
-        "location": state.get("location", ""),
-        "remaining_countries": state.get("remaining_countries", []),
-        "max_leads": state.get("max_leads", 0),
+        "industry": progress.get("industry", state.get("industry", "")),
+        "location": progress.get("current_country", state.get("location", "")),
+        "max_leads": progress.get("max_leads", state.get("max_leads", 0)),
         "steps_completed": steps_completed,
+        "current_step": progress.get("current_step", ""),
         "current_step_index": current_step_idx,
         "total_steps": len(PIPELINE_STEPS),
         "step_labels": STEP_LABELS,
-        "pause_reason": state.get("pause_reason", ""),
+        "pause_reason": progress.get("pause_reason", state.get("pause_reason", "")),
         "paused_at": state.get("paused_at", ""),
-        "last_updated": state.get("last_updated", ""),
-        "run_id": state.get("run_id", ""),
+        "last_updated": state.get("last_updated", progress.get("started_at", "")),
+        "finished_at": progress.get("finished_at", ""),
+        "run_id": progress.get("run_id", state.get("run_id", "")),
+        "countries": countries,
+        "countries_done": countries_done,
+        "countries_results": countries_results,
+        "total_leads_all": total_leads_all,
         "leads": {
             "scraped": _count_leads("google_maps_results.json"),
             "qualified": _count_leads("qualified_leads.json"),
@@ -632,6 +651,41 @@ button:active { transform: scale(.97); }
 }
 .api-stats .err { color: var(--red); }
 
+/* Country progress */
+.country-track {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.country-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: .75rem;
+  font-weight: 500;
+  background: var(--surface2);
+  color: var(--text2);
+  border: 1px solid var(--border);
+}
+.country-chip.done {
+  background: #00b89418;
+  color: var(--green);
+  border-color: #00b89440;
+}
+.country-chip.active {
+  background: #6c5ce718;
+  color: var(--accent2);
+  border-color: #6c5ce740;
+}
+.country-chip .chip-icon { font-size: .7rem; }
+.country-chip .chip-count {
+  font-weight: 700;
+  margin-left: 2px;
+}
+
 /* Logs */
 .log-box {
   background: #0a0c10;
@@ -718,6 +772,7 @@ button:active { transform: scale(.97); }
   <div class="right-col">
     <div class="card">
       <h2>Progression du pipeline</h2>
+      <div class="country-track" id="countryTrack"></div>
       <div class="pipeline-info">
         <div class="info-box"><div class="value" id="cntScraped">—</div><div class="label">Scrapes</div></div>
         <div class="info-box"><div class="value" id="cntQualified">—</div><div class="label">Qualifies</div></div>
@@ -876,30 +931,46 @@ function renderSteps(completed, status){
 function updateStatus(d){
   const pill = document.getElementById('statusPill');
   const txt = document.getElementById('statusText');
-  const labels = {idle:'Idle', running:'En cours', paused:'En pause', finished:'Termine'};
-  pill.className = 'status-pill status-' + d.status;
+  const labels = {idle:'Idle', running:'En cours', paused:'En pause', finished:'Termine', completed:'Termine'};
+  const pillClass = d.status === 'completed' ? 'finished' : d.status;
+  pill.className = 'status-pill status-' + pillClass;
   txt.textContent = labels[d.status] || d.status;
 
   document.getElementById('btnStop').disabled = d.status !== 'running';
 
+  // Show total leads across all countries when available
+  const totalAll = d.total_leads_all || 0;
   document.getElementById('cntScraped').textContent = d.leads.scraped || '—';
   document.getElementById('cntQualified').textContent = d.leads.qualified || '—';
   document.getElementById('cntEnriched').textContent = d.leads.enriched || '—';
+
+  const isActive = d.status === 'running' || d.status === 'paused';
   document.getElementById('cntStep').textContent =
-    d.status === 'idle' ? '—' : `${d.current_step_index}/${d.total_steps}`;
+    (d.status === 'idle') ? '—' :
+    (d.status === 'completed' || d.status === 'finished')
+      ? (totalAll > 0 ? totalAll : '—')
+      : `${d.current_step_index}/${d.total_steps}`;
+
+  // Update step counter label for completed state
+  const stepLabel = document.querySelector('#cntStep + .label');
+  if(stepLabel) stepLabel.textContent =
+    (d.status === 'completed' || d.status === 'finished') && totalAll > 0
+      ? 'TOTAL LEADS' : 'ETAPE';
 
   renderSteps(d.steps_completed, d.status);
+  renderCountryChips(d);
 
   const meta = document.getElementById('metaLine');
   if(d.industry){
     let txt = `<strong>Industrie :</strong> ${d.industry}`;
-    let loc = d.location || '';
-    if(d.remaining_countries && d.remaining_countries.length){
-      loc += ' + ' + d.remaining_countries.join(', ');
+    if(d.countries && d.countries.length){
+      txt += ` &nbsp;|&nbsp; <strong>Pays :</strong> ${d.countries.join(', ')}`;
+    } else if(d.location){
+      txt += ` &nbsp;|&nbsp; <strong>Pays :</strong> ${d.location}`;
     }
-    if(loc) txt += ` &nbsp;|&nbsp; <strong>Pays :</strong> ${loc}`;
     if(d.max_leads) txt += ` &nbsp;|&nbsp; <strong>Max :</strong> ${d.max_leads >= 9999 ? 'Illimite' : d.max_leads}`;
-    if(d.last_updated) txt += `<br><strong>Maj :</strong> ${d.last_updated}`;
+    if(d.finished_at) txt += `<br><strong>Termine :</strong> ${d.finished_at}`;
+    else if(d.last_updated) txt += `<br><strong>Maj :</strong> ${d.last_updated}`;
     meta.innerHTML = txt;
   } else {
     meta.innerHTML = '<em>Aucun pipeline actif</em>';
@@ -913,6 +984,23 @@ function updateStatus(d){
   } else {
     banner.style.display = 'none';
   }
+}
+
+function renderCountryChips(d){
+  const track = document.getElementById('countryTrack');
+  const countries = d.countries || [];
+  if(!countries.length){ track.innerHTML = ''; return; }
+  const doneSet = new Set(d.countries_done || []);
+  const results = d.countries_results || {};
+  const current = d.location || '';
+  track.innerHTML = countries.map(c => {
+    const isDone = doneSet.has(c);
+    const isActive = (c === current && d.status === 'running');
+    const cls = isDone ? 'done' : (isActive ? 'active' : '');
+    const icon = isDone ? '&#10003;' : (isActive ? '&#9654;' : '&#9679;');
+    const count = isDone && results[c] !== undefined ? `<span class="chip-count">${results[c]}</span>` : '';
+    return `<div class="country-chip ${cls}"><span class="chip-icon">${icon}</span>${c}${count}</div>`;
+  }).join('');
 }
 
 function renderUsage(items){

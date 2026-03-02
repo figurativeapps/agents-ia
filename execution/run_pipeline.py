@@ -118,13 +118,23 @@ def _fresh_state(industry, location, max_leads):
 
 
 def _save_checkpoint(state_file, state, step_name):
-    """Mark a step as completed."""
+    """Mark a step as completed and update multi-country progress file."""
     if step_name not in state.get('steps_completed', []):
         state.setdefault('steps_completed', []).append(step_name)
     state['last_updated'] = datetime.now().isoformat()
     state['status'] = 'running'
     with open(state_file, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+
+    progress_file = state_file.parent / 'pipeline_progress.json'
+    if progress_file.exists():
+        try:
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                progress = json.load(f)
+            progress['current_step'] = step_name
+            _save_progress(progress_file, progress)
+        except Exception:
+            pass
 
 
 def _is_step_done(state, step_name):
@@ -144,6 +154,17 @@ def _pause_pipeline(state_file, state, reason, remaining_countries=None):
 
     remaining = state.get('remaining_countries', [])
     countries_arg = ','.join([state['location']] + remaining) if remaining else state['location']
+
+    progress_file = state_file.parent / 'pipeline_progress.json'
+    if progress_file.exists():
+        try:
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                progress = json.load(f)
+            progress['status'] = 'paused'
+            progress['pause_reason'] = reason
+            _save_progress(progress_file, progress)
+        except Exception:
+            pass
 
     print(f"\n{'='*60}")
     print(f"⏸️  PIPELINE PAUSED — Rate limit on: {reason}")
@@ -318,6 +339,12 @@ def _run_expansion_loop(args, state, state_file, exec_dir, project_root, country
         _save_accumulated(results_file, accumulated)
 
     return len(accumulated)
+
+
+def _save_progress(progress_file, progress):
+    """Write the multi-country progress file (read by dashboard)."""
+    with open(progress_file, 'w', encoding='utf-8') as f:
+        json.dump(progress, f, ensure_ascii=False, indent=2)
 
 
 def _save_accumulated(results_file, leads):
@@ -537,6 +564,26 @@ Examples:
     start_time = datetime.now()
     total_leads = 0
 
+    # ── Multi-country progress file (persistent, read by dashboard) ──
+    tmp_dir = Path(__file__).parent.parent / '.tmp'
+    tmp_dir.mkdir(exist_ok=True)
+    progress_file = tmp_dir / 'pipeline_progress.json'
+    progress = {
+        'run_id': start_time.strftime('%Y%m%d_%H%M%S'),
+        'industry': args.industry,
+        'max_leads': args.max_leads,
+        'countries': country_list,
+        'countries_done': [],
+        'countries_results': {},
+        'current_country': None,
+        'current_step': None,
+        'status': 'running',
+        'started_at': start_time.isoformat(),
+        'finished_at': None,
+        'total_leads': 0,
+    }
+    _save_progress(progress_file, progress)
+
     print("""
     ╔═══════════════════════════════════════════════════════════╗
     ║                                                           ║
@@ -569,8 +616,18 @@ Examples:
                 print(f"##    Remaining: {', '.join(remaining)}")
             print(f"{'#'*60}")
 
+        progress['current_country'] = country
+        progress['current_step'] = 'step1_expand'
+        _save_progress(progress_file, progress)
+
         leads = _run_pipeline_for_country(args, country, remaining_countries=remaining)
         total_leads += leads
+
+        progress['countries_done'].append(country)
+        progress['countries_results'][country] = leads
+        progress['total_leads'] = total_leads
+        progress['current_step'] = None
+        _save_progress(progress_file, progress)
 
         if multi:
             print(f"\n✅ {country}: {leads} leads generated")
@@ -579,6 +636,11 @@ Examples:
 
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
+
+    progress['status'] = 'completed'
+    progress['finished_at'] = end_time.isoformat()
+    progress['current_country'] = None
+    _save_progress(progress_file, progress)
 
     print(f"\n{'='*60}")
     print(f"✅ PIPELINE COMPLETE!")
