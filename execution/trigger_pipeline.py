@@ -35,15 +35,27 @@ LOG_FILE = f"{VPS_PATH}/.tmp/pipeline_output.log"
 WATCHER_LOG = f"{VPS_PATH}/.tmp/watcher.log"
 
 
+SSH_OPTS = ["-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=30", "-o", "ConnectTimeout=10"]
+MAX_SSH_RETRIES = 3
+
+
 def ssh(cmd, capture=False, check=True):
-    """Run a command on the VPS via SSH."""
-    full = ["ssh", "-o", "StrictHostKeyChecking=no", VPS_SSH, cmd]
-    if capture:
-        result = subprocess.run(full, capture_output=True, text=True, encoding="utf-8", errors="replace")
-        return result
-    else:
-        result = subprocess.run(full, check=check)
-        return result
+    """Run a command on the VPS via SSH with automatic retry."""
+    full = ["ssh"] + SSH_OPTS + [VPS_SSH, cmd]
+    for attempt in range(1, MAX_SSH_RETRIES + 1):
+        try:
+            if capture:
+                result = subprocess.run(full, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            else:
+                result = subprocess.run(full, check=check)
+            return result
+        except subprocess.CalledProcessError:
+            if attempt < MAX_SSH_RETRIES:
+                import time
+                print(f"  SSH connection failed, retrying ({attempt}/{MAX_SSH_RETRIES})...")
+                time.sleep(3)
+            else:
+                raise
 
 
 def cmd_deploy():
@@ -57,8 +69,6 @@ def cmd_deploy():
 
 def cmd_run(args):
     """Launch the pipeline on VPS in background."""
-    cmd_deploy()
-
     country_arg = ""
     if args.countries:
         country_arg = f'--countries "{args.countries}"'
@@ -79,12 +89,14 @@ def cmd_run(args):
         f'{resume_flag}'
     ).strip()
 
-    # Kill any existing pipeline process
-    ssh(f"pkill -f 'run_pipeline.py' 2>/dev/null || true", check=False)
-
-    # Launch in background with nohup, log to file
+    # Single SSH: deploy + kill old process + launch new
+    print("Deploying and launching on VPS...")
     ssh(
-        f'cd {VPS_PATH} && mkdir -p .tmp && '
+        f'cd {VPS_PATH} && '
+        f'git pull && '
+        f'{VPS_PIP} install -r requirements.txt -q 2>&1 | tail -3 && '
+        f'pkill -f "run_pipeline.py" 2>/dev/null; sleep 1; '
+        f'mkdir -p .tmp && '
         f'nohup {pipeline_cmd} > {LOG_FILE} 2>&1 &'
     )
 
