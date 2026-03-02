@@ -17,16 +17,23 @@ import sys
 import json
 import signal
 import subprocess
+import requests
 from pathlib import Path
 from datetime import datetime
+from dotenv import load_dotenv
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
 
+load_dotenv()
+
 sys.path.insert(0, str(Path(__file__).parent))
 from api_utils import API_LIMITS, load_and_merge_tracker_snapshots, load_monthly_usage
+
+FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 PROJECT_ROOT = Path(__file__).parent.parent
 TMP_DIR = PROJECT_ROOT / ".tmp"
@@ -158,6 +165,73 @@ def get_status():
     }
 
 
+_provider_cache = {"firecrawl": None, "firecrawl_ts": 0,
+                    "anthropic": None, "anthropic_ts": 0}
+_CACHE_TTL = 120  # seconds
+
+
+def _fetch_firecrawl_usage():
+    """Fetch real credit usage from Firecrawl API. Cached for 2 min."""
+    now = datetime.now().timestamp()
+    if _provider_cache["firecrawl"] and now - _provider_cache["firecrawl_ts"] < _CACHE_TTL:
+        return _provider_cache["firecrawl"]
+    if not FIRECRAWL_API_KEY:
+        return None
+    try:
+        resp = requests.get(
+            "https://api.firecrawl.dev/v1/team/credit-usage",
+            headers={"Authorization": f"Bearer {FIRECRAWL_API_KEY}"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            body = resp.json()
+            data = body.get("data", body)
+            result = {
+                "remaining": data.get("remaining_credits", data.get("remainingCredits")),
+                "plan": data.get("plan_credits", data.get("planCredits")),
+                "period_start": data.get("billing_period_start", data.get("billingPeriodStart")),
+                "period_end": data.get("billing_period_end", data.get("billingPeriodEnd")),
+            }
+            if result["plan"] and result["remaining"] is not None:
+                result["used"] = result["plan"] - result["remaining"]
+            _provider_cache["firecrawl"] = result
+            _provider_cache["firecrawl_ts"] = now
+            return result
+    except Exception:
+        pass
+    return None
+
+
+def _fetch_anthropic_cost():
+    """Fetch total cost from Anthropic console page (via Admin API if available)."""
+    admin_key = os.getenv("ANTHROPIC_ADMIN_KEY", "")
+    if not admin_key:
+        return None
+    now = datetime.now().timestamp()
+    if _provider_cache["anthropic"] and now - _provider_cache["anthropic_ts"] < _CACHE_TTL:
+        return _provider_cache["anthropic"]
+    try:
+        today = datetime.now().strftime("%Y-%m-%d")
+        month_start = datetime.now().strftime("%Y-%m-01")
+        resp = requests.get(
+            "https://api.anthropic.com/v1/organizations/cost_report",
+            headers={"x-api-key": admin_key, "anthropic-version": "2023-06-01"},
+            params={"start_date": month_start, "end_date": today,
+                    "bucket_size": "none"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            total = sum(b.get("cost_usd", 0) for b in data.get("data", []))
+            result = {"cost_usd": round(total, 4)}
+            _provider_cache["anthropic"] = result
+            _provider_cache["anthropic_ts"] = now
+            return result
+    except Exception:
+        pass
+    return None
+
+
 API_GROUPS = [
     {
         "label": "Serper",
@@ -243,11 +317,24 @@ def get_usage():
             if merged.calls:
                 calls = {label: e for label, e in merged.calls.items()}
 
+    fc_live = _fetch_firecrawl_usage()
+    anth_live = _fetch_anthropic_cost()
+
     groups = []
     for grp in API_GROUPS:
         agg = _aggregate_calls(calls, grp["apis"], grp.get("prefix_match"))
         quota = grp["quota"]
-        pct = round(agg["success"] / quota * 100, 1) if quota and quota > 0 else None
+        used = agg["success"]
+        cost_usd = agg["cost_usd"]
+
+        # Override with live provider data when available
+        if grp["label"] == "Firecrawl" and fc_live and fc_live.get("used") is not None:
+            used = fc_live["used"]
+            quota = fc_live.get("plan") or quota
+        if grp["label"] == "Anthropic" and anth_live:
+            cost_usd = anth_live["cost_usd"]
+
+        pct = round(used / quota * 100, 1) if quota and quota > 0 else None
 
         detail = []
         if grp["display"] in ("calls_detail",):
@@ -271,25 +358,41 @@ def get_usage():
                     "used": d.get("success", 0),
                 })
 
-        groups.append({
+        entry = {
             "label": grp["label"],
             "display": grp["display"],
             "quota": quota,
-            "used": agg["success"],
+            "used": used,
             "total_calls": agg["total"],
             "rate_limited": agg["rate_limited"],
             "errors": agg["errors"],
             "pct": pct,
-            "cost_usd": agg["cost_usd"],
+            "cost_usd": cost_usd,
             "tokens_in": agg["tokens_in"],
             "tokens_out": agg["tokens_out"],
             "detail": detail,
-        })
+        }
+        if grp["label"] == "Firecrawl" and fc_live:
+            entry["remaining"] = fc_live.get("remaining")
+            entry["source"] = "live"
+        if grp["label"] == "Anthropic" and anth_live:
+            entry["source"] = "live"
+
+        groups.append(entry)
 
     monthly_path = TMP_DIR / f'api_usage_{datetime.now().strftime("%Y-%m")}.json'
     monthly_data = _read_json(monthly_path)
     ts = (monthly_data or {}).get("last_updated", "")
     return {"groups": groups, "timestamp": ts}
+
+
+@app.get("/api/providers")
+def get_providers():
+    """Direct fetch from provider billing APIs (debug / health-check)."""
+    return {
+        "firecrawl": _fetch_firecrawl_usage(),
+        "anthropic": _fetch_anthropic_cost(),
+    }
 
 
 @app.get("/api/logs")
@@ -698,6 +801,24 @@ button:active { transform: scale(.97); }
 }
 .detail-row .detail-label { font-weight: 500; }
 .detail-row .detail-val { color: var(--text); }
+.live-badge {
+  display: inline-block;
+  background: #22c55e;
+  color: #000;
+  font-size: .5rem;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-left: 6px;
+  vertical-align: middle;
+  letter-spacing: .5px;
+}
+.remaining {
+  display: block;
+  font-size: .65rem;
+  color: var(--text2);
+  margin-top: 2px;
+}
 
 /* Country progress */
 .country-track {
@@ -1058,6 +1179,9 @@ function renderUsage(groups){
     const card = document.createElement('div');
     card.className = 'api-card';
 
+    const liveBadge = g.source === 'live'
+      ? '<span class="live-badge">LIVE</span>' : '';
+
     const errTxt = g.rate_limited > 0
       ? `<span class="err">${g.rate_limited} x 429</span>`
       : (g.errors > 0 ? `<span class="err">${g.errors} err</span>` : '');
@@ -1073,7 +1197,11 @@ function renderUsage(groups){
       const pct = g.pct !== null && g.pct !== undefined ? g.pct : 0;
       const color = pct >= 80 ? 'red' : (pct >= 50 ? 'orange' : 'green');
       gaugeHtml = `<div class="gauge-bar"><div class="gauge-fill gauge-${color}" style="width:${pct}%"></div></div>`;
-      statsHtml = `<span>${g.used} / ${g.quota ? g.quota.toLocaleString() : '—'}</span><span>${g.quota ? pct+'%' : '—'}</span>${errTxt}`;
+      let remainTxt = '';
+      if(g.remaining !== undefined && g.remaining !== null){
+        remainTxt = `<span class="remaining">${g.remaining.toLocaleString()} restants</span>`;
+      }
+      statsHtml = `<span>${g.used} / ${g.quota ? g.quota.toLocaleString() : '\u2014'}</span><span>${g.quota ? pct+'%' : '\u2014'}</span>${errTxt}${remainTxt}`;
     } else {
       gaugeHtml = '';
       statsHtml = `<span>${g.total_calls} appels</span><span>${g.used} OK</span>${errTxt}`;
@@ -1096,7 +1224,7 @@ function renderUsage(groups){
     }
 
     card.innerHTML = `
-      <div class="api-name">${g.label}</div>
+      <div class="api-name">${g.label}${liveBadge}</div>
       ${gaugeHtml}
       <div class="api-stats">${statsHtml}</div>
       ${detailHtml}`;
