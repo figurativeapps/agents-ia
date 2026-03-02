@@ -132,6 +132,31 @@ python execution/sync_hubspot.py --input .tmp/enriched_leads.json --write-log
 | `execution/watch_lead_status.py` | Two-phase prospection watcher | HubSpot ↔ ClickUp ↔ R2 |
 | `execution/pipeline_watcher.py` | VPS cron: resume paused pipelines | State → API test → Resume |
 | `execution/run_pipeline.py` | Master pipeline orchestrator (expansion + pause/resume) | Args → Full pipeline |
+| `execution/dashboard_server.py` | Web dashboard: launch, monitor, API usage (port 8080) | Browser → FastAPI → `.tmp/` |
+
+---
+
+## Dashboard (monitoring & lancement)
+
+- **Script :** `execution/dashboard_server.py`
+- **Port :** 8080 (`http://<VPS_IP>:8080`)
+- **Fonctions :** Lancer une prospection, suivre la progression en temps reel, monitorer les quotas API
+- **Deploiement VPS :**
+  ```bash
+  # Lancement direct
+  nohup python execution/dashboard_server.py > .tmp/dashboard.log 2>&1 &
+
+  # Ou via systemd (demarrage auto)
+  # Creer /etc/systemd/system/lead-dashboard.service puis:
+  # systemctl enable lead-dashboard && systemctl start lead-dashboard
+  ```
+- **Endpoints API :**
+  - `GET /` — Dashboard HTML
+  - `GET /api/status` — Statut pipeline + compteurs leads
+  - `GET /api/usage` — Utilisation API vs quotas mensuels
+  - `GET /api/logs` — Dernieres lignes du log pipeline
+  - `POST /api/launch` — Lancer un pipeline `{industry, countries[], max_leads}`
+  - `POST /api/stop` — Arreter le pipeline en cours
 
 ---
 
