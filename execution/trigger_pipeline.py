@@ -18,6 +18,13 @@ import argparse
 import sys
 import os
 
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
+
 VPS_USER = "figurative"
 VPS_HOST = "46.224.215.0"
 VPS_SSH = f"{VPS_USER}@{VPS_HOST}"

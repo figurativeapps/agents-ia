@@ -35,6 +35,7 @@ if sys.platform == 'win32':
         sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'strict')
 
 RATE_LIMIT_EXIT_CODE = 75
+PYTHON = sys.executable
 
 
 # ───────────────────────────────────────────────────────────────
@@ -240,7 +241,7 @@ def _run_expansion_loop(args, state, state_file, exec_dir, project_root, country
     # Phase 1: Original query
     original_query = f"fabricant {args.industry} {country}"
     if original_query not in queries_tried:
-        scrape_cmd = (f'python "{exec_dir}/scrape_google_maps.py" '
+        scrape_cmd = (f'"{PYTHON}" "{exec_dir}/scrape_google_maps.py" '
                       f'--industry "{args.industry}" --location "{country}" '
                       f'--max_leads {max_leads}')
         result = run_command("STEP 1: Scraping Google Maps", scrape_cmd, critical=False)
@@ -282,11 +283,11 @@ def _run_expansion_loop(args, state, state_file, exec_dir, project_root, country
 
         needed = max_leads - len(accumulated)
         if source == 'web':
-            scrape_cmd = (f'python "{exec_dir}/scrape_google_maps.py" '
+            scrape_cmd = (f'"{PYTHON}" "{exec_dir}/scrape_google_maps.py" '
                           f'--industry "{args.industry}" --location "{country}" '
                           f'--max_leads {needed + 10} --source web --query-override "{variant}"')
         else:
-            scrape_cmd = (f'python "{exec_dir}/scrape_google_maps.py" '
+            scrape_cmd = (f'"{PYTHON}" "{exec_dir}/scrape_google_maps.py" '
                           f'--industry "{args.industry}" --location "{country}" '
                           f'--max_leads {needed + 10} --query-override "{variant}"')
 
@@ -327,7 +328,7 @@ def _save_accumulated(results_file, leads):
 
 def _run_dedup(exec_dir, results_file, no_hubspot):
     """Run dedup and return the deduplicated leads."""
-    dedup_cmd = f'python "{exec_dir}/dedup.py" --input "{results_file}"'
+    dedup_cmd = f'"{PYTHON}" "{exec_dir}/dedup.py" --input "{results_file}"'
     if no_hubspot:
         dedup_cmd += ' --no-hubspot'
     run_command("Deduplication", dedup_cmd, critical=False)
@@ -392,7 +393,7 @@ def _run_pipeline_for_country(args, country, remaining_countries=None):
     if args.resume and _is_step_done(state, STEP2):
         print(f"\n[RESUME] Skipping STEP 2 (already completed)")
     else:
-        qualify_cmd = (f'python "{exec_dir}/qualify_site.py" '
+        qualify_cmd = (f'"{PYTHON}" "{exec_dir}/qualify_site.py" '
                        f'--input "{project_root}/.tmp/google_maps_results.json" '
                        f'--industry "{args.industry}" --workers {args.workers}')
         result = run_command("STEP 2: Qualifying Websites (LLM)", qualify_cmd, critical=False)
@@ -408,7 +409,7 @@ def _run_pipeline_for_country(args, country, remaining_countries=None):
     if args.resume and _is_step_done(state, STEP3):
         print(f"\n[RESUME] Skipping STEP 3 (already completed)")
     else:
-        enrich_cmd = f'python "{exec_dir}/enrich.py" --input "{project_root}/.tmp/qualified_leads.json"'
+        enrich_cmd = f'"{PYTHON}" "{exec_dir}/enrich.py" --input "{project_root}/.tmp/qualified_leads.json"'
         result = run_command("STEP 3: Enriching Contacts (Waterfall)", enrich_cmd, critical=False)
         if result == 'rate_limited':
             _pause_pipeline(state_file, state, 'Serper OSINT (enrichment)', remaining)
@@ -424,7 +425,7 @@ def _run_pipeline_for_country(args, country, remaining_countries=None):
     if args.resume and _is_step_done(state, STEP3C):
         print(f"\n[RESUME] Skipping STEP 3c (already completed)")
     else:
-        score_cmd = f'python "{exec_dir}/score_lead.py" --input "{enriched_path}" --industry "{args.industry}"'
+        score_cmd = f'"{PYTHON}" "{exec_dir}/score_lead.py" --input "{enriched_path}" --industry "{args.industry}"'
         result = run_command("STEP 3c: Scoring Leads (LLM)", score_cmd, critical=False)
         if result == 'rate_limited':
             _pause_pipeline(state_file, state, 'Anthropic (scoring)', remaining)
@@ -434,7 +435,7 @@ def _run_pipeline_for_country(args, country, remaining_countries=None):
     if args.use_excel:
         STEP4 = "step4_excel"
         if not (args.resume and _is_step_done(state, STEP4)):
-            save_cmd = f'python "{exec_dir}/save_to_excel.py" --input "{enriched_path}"'
+            save_cmd = f'"{PYTHON}" "{exec_dir}/save_to_excel.py" --input "{enriched_path}"'
             result = run_command("STEP 4: Saving to Excel Database", save_cmd, critical=False)
             if result != 'error':
                 _save_checkpoint(state_file, state, STEP4)
@@ -442,7 +443,7 @@ def _run_pipeline_for_country(args, country, remaining_countries=None):
         if not args.no_hubspot:
             STEP5 = "step5_hubspot"
             if not (args.resume and _is_step_done(state, STEP5)):
-                hubspot_cmd = f'python "{exec_dir}/sync_hubspot.py" --input "{enriched_path}"'
+                hubspot_cmd = f'"{PYTHON}" "{exec_dir}/sync_hubspot.py" --input "{enriched_path}"'
                 result = run_command("STEP 5: Syncing to HubSpot CRM", hubspot_cmd, critical=False)
                 if result == 'rate_limited':
                     _pause_pipeline(state_file, state, 'HubSpot (sync)', remaining)
@@ -452,7 +453,7 @@ def _run_pipeline_for_country(args, country, remaining_countries=None):
         if not args.no_hubspot:
             STEP4 = "step4_hubspot"
             if not (args.resume and _is_step_done(state, STEP4)):
-                hubspot_cmd = f'python "{exec_dir}/sync_hubspot.py" --input "{enriched_path}" --write-log'
+                hubspot_cmd = f'"{PYTHON}" "{exec_dir}/sync_hubspot.py" --input "{enriched_path}" --write-log'
                 result = run_command("STEP 4: Syncing directly to HubSpot CRM", hubspot_cmd, critical=False)
                 if result == 'rate_limited':
                     _pause_pipeline(state_file, state, 'HubSpot (sync)', remaining)
@@ -462,7 +463,7 @@ def _run_pipeline_for_country(args, country, remaining_countries=None):
             if not args.no_backup:
                 STEP5 = "step5_backup"
                 if not (args.resume and _is_step_done(state, STEP5)):
-                    backup_cmd = f'python "{exec_dir}/save_to_excel.py" --input "{enriched_path}" --backup-mode'
+                    backup_cmd = f'"{PYTHON}" "{exec_dir}/save_to_excel.py" --input "{enriched_path}" --backup-mode'
                     result = run_command("STEP 5: Excel backup (post-sync)", backup_cmd, critical=False)
                     if result != 'error':
                         _save_checkpoint(state_file, state, STEP5)
