@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent))
-from api_utils import API_LIMITS, load_and_merge_tracker_snapshots
+from api_utils import API_LIMITS, load_and_merge_tracker_snapshots, load_monthly_usage
 
 PROJECT_ROOT = Path(__file__).parent.parent
 TMP_DIR = PROJECT_ROOT / ".tmp"
@@ -160,24 +160,26 @@ def get_status():
 
 @app.get("/api/usage")
 def get_usage():
-    tracker_data = _read_json(TMP_DIR / "api_tracker.json")
-    calls = {}
-    if tracker_data and "calls" in tracker_data:
-        calls = tracker_data["calls"]
-    else:
-        merged = load_and_merge_tracker_snapshots()
-        if merged.calls:
-            calls = {
-                label: {
-                    "total": e["total"],
-                    "success": e["success"],
-                    "rate_limited": e["rate_limited"],
-                    "server_errors": e.get("server_errors", 0),
-                    "client_errors": e.get("client_errors", 0),
-                    "network_errors": e.get("network_errors", 0),
+    calls = load_monthly_usage()
+
+    if not calls:
+        tracker_data = _read_json(TMP_DIR / "api_tracker.json")
+        if tracker_data and "calls" in tracker_data:
+            calls = tracker_data["calls"]
+        else:
+            merged = load_and_merge_tracker_snapshots()
+            if merged.calls:
+                calls = {
+                    label: {
+                        "total": e["total"],
+                        "success": e["success"],
+                        "rate_limited": e["rate_limited"],
+                        "server_errors": e.get("server_errors", 0),
+                        "client_errors": e.get("client_errors", 0),
+                        "network_errors": e.get("network_errors", 0),
+                    }
+                    for label, e in merged.calls.items()
                 }
-                for label, e in merged.calls.items()
-            }
 
     usage = []
     seen = set()
@@ -188,6 +190,7 @@ def get_usage():
         "Hunter domain-search", "Apollo people-search",
         "MillionVerifier",
         "HubSpot contact-search",
+        "Serper Web",
     ]
 
     for label in primary_apis:
@@ -261,7 +264,10 @@ def get_usage():
             "bottleneck": limits.get("bottleneck", False),
         })
 
-    return {"usage": usage, "timestamp": tracker_data.get("timestamp", "") if tracker_data else ""}
+    monthly_path = TMP_DIR / f'api_usage_{datetime.now().strftime("%Y-%m")}.json'
+    monthly_data = _read_json(monthly_path)
+    ts = (monthly_data or {}).get("last_updated", "")
+    return {"usage": usage, "timestamp": ts}
 
 
 @app.get("/api/logs")

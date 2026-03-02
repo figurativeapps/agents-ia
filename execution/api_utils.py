@@ -138,6 +138,17 @@ API_LIMITS = {
         "wait_recommendation": "0.5s entre leads suffit (search = 5 req/s max)",
         "ideal_batch": 50,
     },
+    "Serper Web": {
+        "monthly_quota": None,
+        "rate_per_second": 100,
+        "cost_per_unit": "search",
+        "free_tier": True,
+        "shared_with": "Serper Maps",
+        "upgrade_url": "https://serper.dev/pricing",
+        "upgrade_price": "$50/mois pour 50 000 recherches (partage avec Maps)",
+        "wait_recommendation": "Aucune attente necessaire",
+        "ideal_batch": 50,
+    },
 }
 
 # For SDK-based tools (HubSpot)
@@ -372,7 +383,8 @@ api_tracker = APITracker()
 
 
 def save_tracker_snapshot(step_name):
-    """Save current tracker data to .tmp/ so the pipeline orchestrator can merge them."""
+    """Save current tracker data to .tmp/ so the pipeline orchestrator can merge them.
+    Also persists to the cumulative monthly usage file for the dashboard."""
     output_dir = Path(__file__).parent.parent / '.tmp'
     output_dir.mkdir(exist_ok=True)
     snapshot_path = output_dir / f'api_tracker_{step_name}.json'
@@ -382,6 +394,64 @@ def save_tracker_snapshot(step_name):
             "timestamp": datetime.now().isoformat(),
             "calls": api_tracker.calls
         }, f, ensure_ascii=False, indent=2)
+    _persist_monthly_usage(api_tracker.calls)
+
+
+def _get_monthly_usage_path():
+    """Return path to the current month's persistent usage file."""
+    output_dir = Path(__file__).parent.parent / '.tmp'
+    month_key = datetime.now().strftime("%Y-%m")
+    return output_dir / f'api_usage_{month_key}.json'
+
+
+def _persist_monthly_usage(calls_data):
+    """Atomically add current process's API calls to the cumulative monthly file.
+    Uses a file lock via atomic rename to handle concurrent writes."""
+    path = _get_monthly_usage_path()
+    path.parent.mkdir(exist_ok=True)
+
+    existing = {}
+    if path.exists():
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
+    cumulative = existing.get("calls", {})
+    for label, entry in calls_data.items():
+        if label not in cumulative:
+            cumulative[label] = {
+                "total": 0, "success": 0, "rate_limited": 0,
+                "server_errors": 0, "client_errors": 0, "network_errors": 0,
+            }
+        for key in ['total', 'success', 'rate_limited', 'server_errors',
+                     'client_errors', 'network_errors']:
+            cumulative[label][key] = cumulative[label].get(key, 0) + entry.get(key, 0)
+
+    tmp_path = path.with_suffix('.tmp')
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump({
+            "month": datetime.now().strftime("%Y-%m"),
+            "last_updated": datetime.now().isoformat(),
+            "calls": cumulative,
+        }, f, ensure_ascii=False, indent=2)
+    tmp_path.replace(path)
+
+
+def load_monthly_usage():
+    """Load the current month's cumulative API usage. Returns dict of calls or empty dict."""
+    path = _get_monthly_usage_path()
+    if not path.exists():
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if data.get("month") != datetime.now().strftime("%Y-%m"):
+            return {}
+        return data.get("calls", {})
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 
 def load_and_merge_tracker_snapshots():
