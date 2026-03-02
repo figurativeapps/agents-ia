@@ -78,9 +78,9 @@ def _test_firecrawl():
         return False, "FIRECRAWL_API_KEY not set"
     try:
         resp = requests.post(
-            "https://api.firecrawl.dev/v0/scrape",
+            "https://api.firecrawl.dev/v1/scrape",
             headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
-            json={"url": "https://example.com"},
+            json={"url": "https://example.com", "formats": ["markdown"]},
             timeout=20
         )
         if resp.status_code == 200:

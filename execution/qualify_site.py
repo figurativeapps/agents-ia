@@ -187,10 +187,11 @@ CONTACT_PAGE_SUFFIXES = [
 
 
 FIRECRAWL_DELAY = 13  # 5 req/min free tier → 12s minimum, +1s safety margin
+FIRECRAWL_API_URL = "https://api.firecrawl.dev/v1/scrape"
 
 def _scrape_page(url, headers):
-    """Scrape a single page via Firecrawl. Respects global semaphore + rate limit delay."""
-    payload = {'url': url}
+    """Scrape a single page via Firecrawl v1. Respects global semaphore + rate limit delay."""
+    payload = {'url': url, 'formats': ['markdown']}
     sem = _firecrawl_semaphore
 
     if sem:
@@ -199,14 +200,14 @@ def _scrape_page(url, headers):
         sleep_between_calls(FIRECRAWL_DELAY, label="Firecrawl")
         resp = call_with_retry(
             lambda: requests.post(
-                "https://api.firecrawl.dev/v0/scrape",
+                FIRECRAWL_API_URL,
                 headers=headers, json=payload, timeout=30
             ),
             label=f"Firecrawl scrape {url}"
         )
         if resp.status_code == 200:
             data = resp.json()
-            return data.get('data', {}).get('markdown', '') or data.get('data', {}).get('content', '')
+            return data.get('data', {}).get('markdown', '')
         raise CrawlError(f"Firecrawl returned {resp.status_code} for {url}")
     except CrawlError:
         raise

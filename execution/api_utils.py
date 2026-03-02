@@ -384,17 +384,43 @@ api_tracker = APITracker()
 
 def save_tracker_snapshot(step_name):
     """Save current tracker data to .tmp/ so the pipeline orchestrator can merge them.
+    Uses accumulative write: if the snapshot already exists (e.g. expansion loop calling
+    the same step multiple times), the new data is ADDED to the existing snapshot.
     Also persists to the cumulative monthly usage file for the dashboard."""
     output_dir = Path(__file__).parent.parent / '.tmp'
     output_dir.mkdir(exist_ok=True)
     snapshot_path = output_dir / f'api_tracker_{step_name}.json'
+
+    current_calls = api_tracker.calls
+
+    existing = {}
+    if snapshot_path.exists():
+        try:
+            with open(snapshot_path, 'r', encoding='utf-8') as f:
+                existing = json.load(f).get('calls', {})
+        except (json.JSONDecodeError, OSError):
+            existing = {}
+
+    merged_calls = {}
+    all_labels = set(list(existing.keys()) + list(current_calls.keys()))
+    for label in all_labels:
+        old = existing.get(label, {})
+        new = current_calls.get(label, {})
+        merged_calls[label] = {}
+        for key in ['total', 'success', 'rate_limited', 'server_errors',
+                     'client_errors', 'network_errors']:
+            merged_calls[label][key] = old.get(key, 0) + new.get(key, 0)
+        merged_calls[label]['first_429_at'] = old.get('first_429_at') or new.get('first_429_at')
+        merged_calls[label]['last_429_at'] = new.get('last_429_at') or old.get('last_429_at')
+
     with open(snapshot_path, 'w', encoding='utf-8') as f:
         json.dump({
             "step": step_name,
             "timestamp": datetime.now().isoformat(),
-            "calls": api_tracker.calls
+            "calls": merged_calls
         }, f, ensure_ascii=False, indent=2)
-    _persist_monthly_usage(api_tracker.calls)
+
+    _persist_monthly_usage(current_calls)
 
 
 def _get_monthly_usage_path():
