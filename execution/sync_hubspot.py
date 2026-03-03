@@ -478,10 +478,34 @@ def _batch_associate_contacts_to_companies(client, plans):
 _hubspot_client = None
 
 
+def _get_contacts_for_company(client, company_id):
+    """Get existing contacts associated with a company. Returns first contact_id or None."""
+    if not company_id:
+        return None
+    try:
+        assocs = sdk_call_with_retry(
+            lambda cid=company_id: client.crm.companies.associations_api.get_all(
+                company_id=cid, to_object_type="contacts"
+            ),
+            label="HubSpot company-associations"
+        )
+        results = assocs.results if hasattr(assocs, 'results') else []
+        if results:
+            return str(results[0].to_object_id)
+    except Exception:
+        pass
+    return None
+
+
 def upsert_single_lead(lead):
     """Create or update a single lead in HubSpot (company + contact + association).
 
-    Designed to be called incrementally during qualification.
+    Dedup strategy (in order):
+      1. Search contact by email (if available)
+      2. Search contact by company name / website domain
+      3. If company already exists in HubSpot, check its associated contacts
+      4. Only create if nothing found
+
     Returns True on success, False on error.
     """
     global _hubspot_client
@@ -500,6 +524,15 @@ def upsert_single_lead(lead):
 
     try:
         company_id = _search_company(client, lead)
+
+        contact_id = None
+        if email:
+            contact_id = _search_contact_by_email(client, email)
+        if not contact_id:
+            contact_id = _search_contact_by_company(client, lead)
+        if not contact_id and company_id:
+            contact_id = _get_contacts_for_company(client, company_id)
+
         if not company_id and company_name:
             props = _build_company_properties(lead)
             company = sdk_call_with_retry(
@@ -510,11 +543,6 @@ def upsert_single_lead(lead):
             )
             company_id = company.id
 
-        contact_id = _search_contact_by_email(client, email)
-        if not contact_id and not email:
-            contact_id = _search_contact_by_company(client, lead)
-
-        props = _build_contact_properties(lead)
         if contact_id:
             update_props = _build_update_properties(lead)
             if update_props:
@@ -526,6 +554,7 @@ def upsert_single_lead(lead):
                     label="HubSpot contact-update"
                 )
         else:
+            props = _build_contact_properties(lead)
             contact = sdk_call_with_retry(
                 lambda p=props: client.crm.contacts.basic_api.create(
                     simple_public_object_input_for_create=SimplePublicObjectInputForCreate(properties=p)
