@@ -435,11 +435,54 @@ def _qualify_single_lead(index, lead, total, industry=''):
 
 _QUALIFIED_PATH = Path(__file__).parent.parent / '.tmp' / 'qualified_leads.json'
 _qualified_lock = threading.Lock()
+_seen_domains = set()
+_seen_names = set()
+
+
+def _normalize_domain(url):
+    if not url:
+        return ''
+    from urllib.parse import urlparse
+    url = url.strip().lower()
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+    try:
+        domain = urlparse(url).netloc
+    except Exception:
+        domain = url
+    return domain.replace('www.', '').rstrip('/')
+
+
+def _normalize_company_name(name):
+    if not name:
+        return ''
+    return re.sub(r'[^\w\s]', ' ', name.lower().strip())
+
+
+def _is_duplicate_company(lead):
+    """Check if this company was already qualified in the current run."""
+    domain = _normalize_domain(lead.get('Site_Web', ''))
+    name = _normalize_company_name(lead.get('Nom_Entreprise', ''))
+
+    if domain and domain in _seen_domains:
+        return True
+    if name and name in _seen_names:
+        return True
+
+    if domain:
+        _seen_domains.add(domain)
+    if name:
+        _seen_names.add(name)
+    return False
 
 
 def _append_qualified_lead(lead):
     """Append a single qualified lead to disk (incremental save) and push to HubSpot."""
     with _qualified_lock:
+        if _is_duplicate_company(lead):
+            _safe_print(f"    -> Doublon ignoré: {lead.get('Nom_Entreprise', '?')}")
+            return
+
         existing = []
         if _QUALIFIED_PATH.exists():
             try:
@@ -474,6 +517,9 @@ def process_leads(input_file, workers=3, industry=''):
 
     if _QUALIFIED_PATH.exists():
         _QUALIFIED_PATH.write_text('[]', encoding='utf-8')
+
+    _seen_domains.clear()
+    _seen_names.clear()
 
     qualified_leads = []
     filtered_count = 0
