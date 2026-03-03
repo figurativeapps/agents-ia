@@ -41,13 +41,15 @@ Si l'utilisateur ne fournit pas tous les inputs, les lui demander avant de comme
 - **Email :** L'email de contact trouvé sur le site est stocké dans `Email_Generique` — c'est l'email principal utilisé pour HubSpot
 - **Filtre :** Garde uniquement Business_Type=Manufacturer (e-commerce non requis)
 
-### Etape 3 : Enrichissement (OSINT)
+### Etape 3 : Enrichissement (OSINT) + Push HubSpot
 - **Script :** `execution/enrich.py`
 - **Input :** `.tmp/qualified_leads.json`
 - **Action :** Recherche OSINT via Serper pour trouver le nom du décideur, son poste et son profil LinkedIn
 - **Note :** L'email de contact provient du site web (étape 2). L'enrichissement ne cherche PAS d'email.
+- **Push HubSpot :** Chaque lead est poussé vers HubSpot immédiatement après enrichissement (données complètes : nom, site, email, type, décideur, LinkedIn, tel)
+- **Sauvegarde incrémentale :** `enriched_leads.json` est sauvegardé après chaque lead enrichi (protection anti-crash)
 
-### Etape 4 : Sync HubSpot (mode par defaut)
+### Etape 4 : Sync HubSpot (filet de sécurité)
 - **Script :** `execution/sync_hubspot.py`
 - **Logique Upsert :**
   1. Chercher contact par email (anti-duplication primaire)

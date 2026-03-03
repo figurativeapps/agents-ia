@@ -47,7 +47,6 @@ PIPELINE_STEPS = [
     "step1_expand",
     "step2_qualify",
     "step3_enrich",
-    "step3c_score",
     "step4_hubspot",
     "step5_backup",
 ]
@@ -56,7 +55,6 @@ STEP_LABELS = {
     "step1_expand": "Scrape + Dedup",
     "step2_qualify": "Qualification",
     "step3_enrich": "Enrichissement",
-    "step3c_score": "Scoring",
     "step4_hubspot": "Sync HubSpot",
     "step5_backup": "Backup Excel",
 }
@@ -255,7 +253,7 @@ API_GROUPS = [
     },
     {
         "label": "Anthropic",
-        "apis": ["Anthropic classify", "Anthropic score"],
+        "apis": ["Anthropic classify"],
         "quota": None,
         "display": "cost",
     },
@@ -1078,7 +1076,6 @@ const STEP_ALL = [
   {key:'step1_expand', label:'Scrape + Dedup'},
   {key:'step2_qualify', label:'Qualification'},
   {key:'step3_enrich', label:'Enrichissement'},
-  {key:'step3c_score', label:'Scoring'},
   {key:'step4_hubspot', label:'Sync HubSpot'},
   {key:'step5_backup', label:'Backup'},
 ];

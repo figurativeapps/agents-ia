@@ -44,6 +44,7 @@ load_dotenv()
 
 # Local imports
 from api_utils import call_with_retry, sleep_between_calls, save_tracker_snapshot
+from sync_hubspot import upsert_single_lead
 
 SERPER_API_KEY = os.getenv('SERPER_API_KEY')
 HUNTER_API_KEY = os.getenv('HUNTER_API_KEY')
@@ -521,6 +522,13 @@ def enrich_lead(company_name, website_url):
     return result
 
 
+def _save_incremental(leads, output_path):
+    """Atomic incremental save to protect against crashes."""
+    tmp_path = Path(str(output_path) + ".tmp")
+    tmp_path.write_text(json.dumps(leads, ensure_ascii=False, indent=2), encoding='utf-8')
+    tmp_path.replace(output_path)
+
+
 def enrich_leads(input_file):
     """Enrich all leads using Extended Waterfall strategy"""
 
@@ -528,13 +536,17 @@ def enrich_leads(input_file):
     with open(input_file, 'r', encoding='utf-8') as f:
         leads = json.load(f)
 
+    output_path = Path(__file__).parent.parent / '.tmp' / 'enriched_leads.json'
+
     print(f"Enriching {len(leads)} leads with Extended Waterfall (5-step)...\n")
 
     stats = {
         'total': len(leads),
         'decideur_found': 0,
         'decideur_not_found': 0,
-        'skipped': 0
+        'skipped': 0,
+        'hubspot_ok': 0,
+        'hubspot_fail': 0,
     }
 
     for i, lead in enumerate(leads, 1):
@@ -552,6 +564,16 @@ def enrich_leads(input_file):
             else:
                 stats['decideur_not_found'] += 1
 
+            _save_incremental(leads, output_path)
+
+            ok = upsert_single_lead(lead)
+            if ok:
+                stats['hubspot_ok'] += 1
+                print(f"    -> HubSpot OK")
+            else:
+                stats['hubspot_fail'] += 1
+                print(f"    -> HubSpot FAIL")
+
             sleep_between_calls(1.5, label="inter-company")
         else:
             print(f"    Skipping (no website)")
@@ -561,6 +583,7 @@ def enrich_leads(input_file):
     print(f"  Decision-maker found: {stats['decideur_found']}/{stats['total']}")
     print(f"  Not found: {stats['decideur_not_found']}")
     print(f"  Skipped (no website): {stats['skipped']}")
+    print(f"  HubSpot: {stats['hubspot_ok']} OK / {stats['hubspot_fail']} FAIL")
 
     return leads
 

@@ -71,16 +71,6 @@ API_LIMITS = {
         "wait_recommendation": "1s entre appels suffit",
         "ideal_batch": 50,
     },
-    "Anthropic score": {
-        "monthly_quota": None,
-        "rate_per_minute": 50,
-        "cost_per_unit": "appel LLM (~250 tokens output)",
-        "free_tier": False,
-        "upgrade_url": "https://console.anthropic.com/settings/plans",
-        "upgrade_price": "Pay-as-you-go : ~$0.001/appel avec Haiku",
-        "wait_recommendation": "0.5s entre appels suffit",
-        "ideal_batch": 50,
-    },
     "Dropcontact batch": {
         "monthly_quota": 1000,  # Paid plan minimum
         "rate_per_minute": 60,

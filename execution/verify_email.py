@@ -187,7 +187,7 @@ def main():
 
     print(f"\nStep 4b complete")
     print(f"Output: {input_path}")
-    print(f"\nNext step: Score leads with score_lead.py")
+    print(f"\nNext step: Sync to HubSpot")
 
     save_tracker_snapshot("step3b_verify")
 

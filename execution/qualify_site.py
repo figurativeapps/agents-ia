@@ -40,7 +40,6 @@ load_dotenv()
 
 # Local imports
 from api_utils import call_with_retry, sleep_between_calls, save_tracker_snapshot, api_tracker
-from sync_hubspot import upsert_single_lead
 
 FIRECRAWL_API_KEY = os.getenv('FIRECRAWL_API_KEY')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
@@ -511,7 +510,7 @@ def _is_duplicate_company(lead):
 
 
 def _append_qualified_lead(lead):
-    """Append a single qualified lead to disk (incremental save) and push to HubSpot."""
+    """Append a single qualified lead to disk (incremental save). HubSpot push happens after enrichment."""
     with _qualified_lock:
         if _is_duplicate_company(lead):
             _safe_print(f"    -> Doublon ignoré: {lead.get('Nom_Entreprise', '?')}")
@@ -526,9 +525,7 @@ def _append_qualified_lead(lead):
         existing.append(lead)
         _QUALIFIED_PATH.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding='utf-8')
 
-    ok = upsert_single_lead(lead)
-    status = "HubSpot OK" if ok else "HubSpot FAIL"
-    _safe_print(f"    -> Qualified & saved ({status})")
+    _safe_print(f"    -> Qualified & saved to disk")
 
 
 def process_leads(input_file, workers=3, industry=''):

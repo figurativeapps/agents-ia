@@ -457,17 +457,6 @@ def _run_pipeline_for_country(args, country, remaining_countries=None):
 
     enriched_path = f"{project_root}/.tmp/enriched_leads.json"
 
-    # ── STEP 3c: Score leads ──
-    STEP3C = "step3c_score"
-    if args.resume and _is_step_done(state, STEP3C):
-        print(f"\n[RESUME] Skipping STEP 3c (already completed)")
-    else:
-        score_cmd = f'"{PYTHON}" "{exec_dir}/score_lead.py" --input "{enriched_path}" --industry "{args.industry}"'
-        result = run_command("STEP 3c: Scoring Leads (LLM)", score_cmd, critical=False)
-        if result == 'rate_limited':
-            _pause_pipeline(state_file, state, 'Anthropic (scoring)', remaining)
-        _save_checkpoint(state_file, state, STEP3C)
-
     # ── STEP 4+5: Sync & Backup ──
     if args.use_excel:
         STEP4 = "step4_excel"
