@@ -191,6 +191,11 @@ Règles:
         return None
 
 
+EMAIL_PAGE_SUFFIXES = [
+    '/contact', '/nous-contacter', '/contactez-nous',
+    '/mentions-legales',
+]
+
 CONTACT_PAGE_SUFFIXES = [
     '/contact', '/nous-contacter', '/contactez-nous',
     '/mentions-legales', '/a-propos', '/qui-sommes-nous',
@@ -347,10 +352,32 @@ def _find_emails_deep(base_url, headers):
     return list(set(all_emails)), homepage_content
 
 
+def _find_email_short(base_url, headers):
+    """Crawl only key email pages (contact, mentions-legales) after homepage."""
+    from urllib.parse import urlparse
+    parsed = urlparse(base_url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+
+    for suffix in EMAIL_PAGE_SUFFIXES:
+        page_url = base + suffix
+        _safe_print(f"    Crawling {page_url}...")
+        try:
+            content = _scrape_page(page_url, headers, max_retries=1)
+        except CrawlError:
+            continue
+        if content:
+            found = extract_emails(content)
+            if found:
+                return found[0]
+        sleep_between_calls(0.5, label="inter-page")
+    return ''
+
+
 def qualify_website(url, industry=''):
     """
-    Use Firecrawl to scrape + LLM (with keyword fallback) to qualify a website.
-    Crawls multiple pages (homepage + contact/legal) to find emails.
+    Classify-first approach: scrape homepage, classify immediately.
+    Only crawl sub-pages for email if classified as Manufacturer.
+    Service/Unknown sites use only 1 Firecrawl credit (homepage only).
 
     Raises CrawlError if the crawl fails (network/API), so the caller can retry.
     Returns a normal dict (with Business_Type) for legitimate classification results.
@@ -379,26 +406,18 @@ def qualify_website(url, industry=''):
         'Content-Type': 'application/json'
     }
 
-    # CrawlError from _find_emails_deep propagates to caller for retry
-    emails, content = _find_emails_deep(url, headers)
-    email = emails[0] if emails else ''
+    # Step 1: Scrape homepage only (1 Firecrawl credit)
+    _safe_print(f"    Crawling homepage...")
+    domain = _extract_domain(url)
+    try:
+        homepage_content = _scrape_page(url, headers)
+    except CrawlError:
+        if domain:
+            _dead_domains.add(domain)
+            _safe_print(f"    Domain blacklisted (dead): {domain}")
+        raise
 
-    if not content:
-        # Firecrawl returned 200 but empty markdown (JS-heavy site or anti-bot protection).
-        # Attempt keyword fallback on URL + company name alone.
-        url_hint = url.replace('https://', '').replace('http://', '').replace('www.', '')
-        fallback_text = f"{url_hint}"
-        fallback = classify_business(fallback_text, url)
-        if fallback['business_type'] == 'Manufacturer':
-            _safe_print(f"    Empty content — URL-based fallback: Manufacturer ({fallback['confidence']}%)")
-            return {
-                'Email_Generique': email,
-                'Ecommerce': fallback['ecommerce'],
-                'Business_Type': 'Manufacturer',
-                'Confidence': fallback['confidence'],
-                'Justification': 'URL-based fallback (empty page content)',
-                'Tech_Stack': 'unknown'
-            }
+    if not homepage_content:
         _safe_print(f"    Empty content — site inaccessible ou JS-only (skipped)")
         return {
             'Email_Generique': '',
@@ -409,15 +428,73 @@ def qualify_website(url, industry=''):
             'Tech_Stack': 'unknown'
         }
 
-    classification = classify_with_llm(content, url, industry)
+    # Step 2: Classify immediately on homepage content
+    classification = classify_with_llm(homepage_content, url, industry)
     if classification is None:
-        classification = classify_business(content, url)
+        classification = classify_business(homepage_content, url)
 
     ecommerce = classification['ecommerce']
     business_type = classification['business_type']
     confidence = classification['confidence']
     justification = classification['justification']
     tech_stack = classification['tech_stack']
+
+    LOW_CONFIDENCE_THRESHOLD = 60
+    CONTEXT_PAGES = ['/a-propos', '/qui-sommes-nous', '/about']
+
+    # Step 3: Low confidence — crawl a few context pages and re-classify
+    if confidence < LOW_CONFIDENCE_THRESHOLD and business_type != 'Manufacturer':
+        _safe_print(f"    Low confidence ({confidence}%) — crawling context pages...")
+        extra_content = ''
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        for suffix in CONTEXT_PAGES:
+            page_url = base + suffix
+            _safe_print(f"    Crawling {page_url}...")
+            try:
+                page = _scrape_page(page_url, headers, max_retries=1)
+            except CrawlError:
+                continue
+            if page:
+                extra_content += '\n' + page
+            sleep_between_calls(0.5, label="inter-page")
+
+        if extra_content:
+            full_content = homepage_content + extra_content
+            reclassification = classify_with_llm(full_content, url, industry)
+            if reclassification is None:
+                reclassification = classify_business(full_content, url)
+            ecommerce = reclassification['ecommerce']
+            business_type = reclassification['business_type']
+            confidence = reclassification['confidence']
+            justification = reclassification['justification']
+            tech_stack = reclassification['tech_stack']
+            _safe_print(f"    Re-classified: {business_type} ({confidence}%)")
+
+    # Step 4: If NOT Manufacturer → return immediately (no further crawling)
+    if business_type != 'Manufacturer':
+        homepage_emails = extract_emails(homepage_content)
+        email = homepage_emails[0] if homepage_emails else ''
+        _safe_print(f"    Active | Email: {email or 'None'} | E-commerce: {ecommerce} | Type: {business_type} ({confidence}%)")
+        if justification:
+            _safe_print(f"    Reason: {justification}")
+        return {
+            'Email_Generique': email,
+            'Ecommerce': ecommerce,
+            'Business_Type': business_type,
+            'Confidence': confidence,
+            'Justification': justification,
+            'Tech_Stack': tech_stack
+        }
+
+    # Step 5: Manufacturer confirmed — find email (homepage first, then key pages only)
+    emails = extract_emails(homepage_content)
+    email = emails[0] if emails else ''
+
+    if not email:
+        _safe_print(f"    Manufacturer — searching email on contact pages...")
+        email = _find_email_short(url, headers)
 
     _safe_print(f"    Active | Email: {email or 'None'} | E-commerce: {ecommerce} | Type: {business_type} ({confidence}%)")
     if justification:
@@ -626,8 +703,8 @@ def process_leads(input_file, workers=3, industry=''):
                     qualified_leads.append(lead)
                     _append_qualified_lead(lead)
 
+    processed = sum(stats.values())
     if quota_hit:
-        processed = sum(stats.values())
         print(f"\n⚠️  Qualification STOPPED: Firecrawl quota exhausted after {processed}/{total} leads")
         print(f"  Qualified so far: {len(qualified_leads)} leads")
         print(f"  Upgrade at https://firecrawl.dev/pricing ($16/month for 3,000 credits)")
