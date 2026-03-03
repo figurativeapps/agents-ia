@@ -116,6 +116,8 @@ def get_status():
         effective_status = "running"
     elif progress.get("status") == "paused":
         effective_status = "paused"
+    elif progress.get("status") == "stopped":
+        effective_status = "stopped"
     elif progress.get("status") == "completed":
         effective_status = "completed"
     elif state.get("status") == "paused":
@@ -447,16 +449,114 @@ def launch_pipeline(req: LaunchRequest):
     return {"ok": True, "industry": req.industry, "countries": req.countries, "max_leads": req.max_leads}
 
 
-@app.post("/api/stop")
-def stop_pipeline():
+def _kill_pipeline_tree(pid: int):
+    """Kill pipeline process and its children."""
+    if sys.platform != "win32":
+        subprocess.run(["pkill", "-TERM", "-P", str(pid)],
+                       capture_output=True, timeout=5)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+
+
+def _write_json(path: Path, data: dict):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+@app.post("/api/pause")
+def pause_pipeline():
+    """Pause the running pipeline: kill process, mark state as paused for resume."""
     pid = _is_pipeline_running()
     if not pid:
         return JSONResponse(status_code=404, content={"error": "No pipeline running"})
     try:
-        os.kill(pid, signal.SIGTERM)
+        _kill_pipeline_tree(pid)
+
+        progress = _read_json(PROGRESS_FILE) or {}
+        progress["status"] = "paused"
+        progress["pause_reason"] = "Pause manuelle"
+        _write_json(PROGRESS_FILE, progress)
+
+        state = _read_json(STATE_FILE) or {}
+        state["status"] = "paused"
+        state["pause_reason"] = "Pause manuelle"
+        state["paused_at"] = datetime.now().isoformat()
+        _write_json(STATE_FILE, state)
+
+        return {"ok": True, "paused_pid": pid}
+    except OSError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/stop")
+def stop_pipeline():
+    """Hard stop: kill process and mark as stopped (no resume)."""
+    pid = _is_pipeline_running()
+    if not pid:
+        return JSONResponse(status_code=404, content={"error": "No pipeline running"})
+    try:
+        _kill_pipeline_tree(pid)
+
+        progress = _read_json(PROGRESS_FILE) or {}
+        progress["status"] = "stopped"
+        progress["finished_at"] = datetime.now().isoformat()
+        _write_json(PROGRESS_FILE, progress)
+
         return {"ok": True, "killed_pid": pid}
     except OSError as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/resume")
+def resume_pipeline():
+    """Resume a paused pipeline using saved state."""
+    if _is_pipeline_running():
+        return JSONResponse(status_code=409, content={"error": "Pipeline already running"})
+
+    progress = _read_json(PROGRESS_FILE) or {}
+    state = _read_json(STATE_FILE) or {}
+
+    industry = progress.get("industry") or state.get("industry")
+    max_leads = progress.get("max_leads") or state.get("max_leads", 50)
+
+    countries = progress.get("countries", [])
+    countries_done = set(progress.get("countries_done", []))
+    remaining = [c for c in countries if c not in countries_done]
+
+    if not remaining:
+        location = state.get("location", "")
+        state_remaining = state.get("remaining_countries", [])
+        remaining = ([location] + state_remaining) if location else state_remaining
+
+    if not industry or not remaining:
+        return JSONResponse(status_code=400,
+                            content={"error": "Aucun pipeline a reprendre"})
+
+    TMP_DIR.mkdir(exist_ok=True)
+    countries_str = ",".join(remaining)
+    cmd = (
+        f'"{PYTHON}" "{PIPELINE_SCRIPT}" '
+        f'--resume '
+        f'--industry "{industry}" '
+        f'--countries "{countries_str}" '
+        f'--max_leads {max_leads} '
+        f'--workers 1'
+    )
+
+    if sys.platform == "win32":
+        subprocess.Popen(
+            cmd, shell=True,
+            stdout=open(LOG_FILE, "a", encoding="utf-8"),
+            stderr=subprocess.STDOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    else:
+        os.system(f"cd {PROJECT_ROOT} && nohup {cmd} >> {LOG_FILE} 2>&1 &")
+
+    return {"ok": True, "industry": industry,
+            "countries": remaining, "max_leads": max_leads}
 
 
 # ── HTML Dashboard ───────────────────────────────────────────
@@ -627,6 +727,16 @@ button:active { transform: scale(.97); }
   opacity: .4;
   cursor: not-allowed;
 }
+.btn-pause {
+  background: var(--orange);
+  color: #000;
+}
+.btn-pause:hover { opacity: .85; }
+.btn-resume {
+  background: var(--green);
+  color: #fff;
+}
+.btn-resume:hover { opacity: .85; }
 .btn-stop {
   background: var(--red);
   color: #fff;
@@ -935,9 +1045,11 @@ button:active { transform: scale(.97); }
           </label>
         </div>
       </div>
-      <div class="btn-row">
-        <button class="btn-launch" id="btnLaunch" onclick="launchPipeline()">Lancer</button>
-        <button class="btn-stop" id="btnStop" onclick="stopPipeline()" disabled>Stop</button>
+      <div class="btn-row" id="btnRow">
+        <button class="btn-launch" id="btnLaunch" onclick="launchPipeline()">&#9654; Lancer</button>
+        <button class="btn-pause" id="btnPause" onclick="pausePipeline()" style="display:none">&#9208; Pause</button>
+        <button class="btn-resume" id="btnResume" onclick="resumePipeline()" style="display:none">&#9654; Reprendre</button>
+        <button class="btn-stop" id="btnStop" onclick="stopPipeline()" style="display:none">&#9209; Stop</button>
       </div>
     </div>
   </div>
@@ -1060,8 +1172,32 @@ async function launchPipeline(){
   setTimeout(()=>{ document.getElementById('btnLaunch').disabled = false; }, 2000);
 }
 
+async function pausePipeline(){
+  try {
+    const r = await fetch('/api/pause', {method:'POST'});
+    const d = await r.json();
+    if(r.ok) showToast('Pipeline en pause');
+    else showToast(d.error || 'Erreur', false);
+  } catch(e){
+    showToast('Erreur reseau', false);
+  }
+  setTimeout(refresh, 1000);
+}
+
+async function resumePipeline(){
+  try {
+    const r = await fetch('/api/resume', {method:'POST'});
+    const d = await r.json();
+    if(r.ok) showToast('Pipeline repris : ' + (d.countries||[]).join(', '));
+    else showToast(d.error || 'Erreur', false);
+  } catch(e){
+    showToast('Erreur reseau', false);
+  }
+  setTimeout(refresh, 2000);
+}
+
 async function stopPipeline(){
-  if(!confirm('Arreter le pipeline en cours ?')) return;
+  if(!confirm('Arreter definitivement le pipeline ?')) return;
   try {
     const r = await fetch('/api/stop', {method:'POST'});
     const d = await r.json();
@@ -1070,6 +1206,7 @@ async function stopPipeline(){
   } catch(e){
     showToast('Erreur reseau', false);
   }
+  setTimeout(refresh, 1000);
 }
 
 const STEP_ALL = [
@@ -1104,12 +1241,17 @@ function renderSteps(completed, status){
 function updateStatus(d){
   const pill = document.getElementById('statusPill');
   const txt = document.getElementById('statusText');
-  const labels = {idle:'Idle', running:'En cours', paused:'En pause', finished:'Termine', completed:'Termine'};
-  const pillClass = d.status === 'completed' ? 'finished' : d.status;
+  const labels = {idle:'Idle', running:'En cours', paused:'En pause', finished:'Termine', completed:'Termine', stopped:'Arrete'};
+  const pillClass = (d.status === 'completed' || d.status === 'stopped') ? 'finished' : d.status;
   pill.className = 'status-pill status-' + pillClass;
   txt.textContent = labels[d.status] || d.status;
 
-  document.getElementById('btnStop').disabled = d.status !== 'running';
+  const isRunning = d.status === 'running';
+  const isPaused = d.status === 'paused';
+  document.getElementById('btnLaunch').style.display = (!isRunning && !isPaused) ? '' : 'none';
+  document.getElementById('btnPause').style.display = isRunning ? '' : 'none';
+  document.getElementById('btnResume').style.display = isPaused ? '' : 'none';
+  document.getElementById('btnStop').style.display = (isRunning || isPaused) ? '' : 'none';
 
   // Show total leads across all countries when available
   const totalAll = d.total_leads_all || 0;
