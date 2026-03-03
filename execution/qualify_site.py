@@ -384,13 +384,28 @@ def qualify_website(url, industry=''):
     email = emails[0] if emails else ''
 
     if not content:
-        _safe_print(f"    Website unreachable")
+        # Firecrawl returned 200 but empty markdown (JS-heavy site or anti-bot protection).
+        # Attempt keyword fallback on URL + company name alone.
+        url_hint = url.replace('https://', '').replace('http://', '').replace('www.', '')
+        fallback_text = f"{url_hint}"
+        fallback = classify_business(fallback_text, url)
+        if fallback['business_type'] == 'Manufacturer':
+            _safe_print(f"    Empty content — URL-based fallback: Manufacturer ({fallback['confidence']}%)")
+            return {
+                'Email_Generique': email,
+                'Ecommerce': fallback['ecommerce'],
+                'Business_Type': 'Manufacturer',
+                'Confidence': fallback['confidence'],
+                'Justification': 'URL-based fallback (empty page content)',
+                'Tech_Stack': 'unknown'
+            }
+        _safe_print(f"    Empty content — site inaccessible ou JS-only (skipped)")
         return {
             'Email_Generique': '',
             'Ecommerce': 'Non',
             'Business_Type': 'Unknown',
             'Confidence': 0,
-            'Justification': 'Website unreachable after crawl',
+            'Justification': 'Empty page content (JS-heavy or anti-bot)',
             'Tech_Stack': 'unknown'
         }
 
@@ -554,10 +569,23 @@ def process_leads(input_file, workers=3, industry=''):
     _dead_domains.clear()
 
     qualified_leads = []
-    filtered_count = 0
-    error_count = 0
+    stats = {"manufacturer": 0, "service": 0, "unknown": 0, "empty": 0, "crawl_error": 0}
 
     quota_hit = False
+
+    def _record_lead(lead, is_qualified):
+        justif = lead.get('Justification', '')
+        btype = lead.get('Business_Type', 'Unknown')
+        if is_qualified:
+            stats['manufacturer'] += 1
+        elif 'Crawl error' in justif or justif.startswith('Crawl error'):
+            stats['crawl_error'] += 1
+        elif 'Empty page content' in justif or 'JS-heavy' in justif:
+            stats['empty'] += 1
+        elif btype == 'Service':
+            stats['service'] += 1
+        else:
+            stats['unknown'] += 1
 
     if workers <= 1:
         for i, lead in enumerate(leads, 1):
@@ -570,13 +598,10 @@ def process_leads(input_file, workers=3, industry=''):
                 print(f"{'!'*60}")
                 quota_hit = True
                 break
+            _record_lead(lead, is_qualified)
             if is_qualified:
                 qualified_leads.append(lead)
                 _append_qualified_lead(lead)
-            else:
-                filtered_count += 1
-                if reason and 'Crawl error' in (lead.get('Justification') or ''):
-                    error_count += 1
     else:
         futures = {}
         with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -596,22 +621,23 @@ def process_leads(input_file, workers=3, industry=''):
                     for f in futures:
                         f.cancel()
                     break
+                _record_lead(lead, is_qualified)
                 if is_qualified:
                     qualified_leads.append(lead)
                     _append_qualified_lead(lead)
-                else:
-                    filtered_count += 1
-                    if lead.get('Justification', '').startswith('Crawl error'):
-                        error_count += 1
 
     if quota_hit:
-        processed = len(qualified_leads) + filtered_count
+        processed = sum(stats.values())
         print(f"\n⚠️  Qualification STOPPED: Firecrawl quota exhausted after {processed}/{total} leads")
         print(f"  Qualified so far: {len(qualified_leads)} leads")
         print(f"  Upgrade at https://firecrawl.dev/pricing ($16/month for 3,000 credits)")
     else:
         print(f"\nQualification complete: {len(qualified_leads)}/{total} manufacturer/seller leads")
-        print(f"Filtered out: {filtered_count} leads ({error_count} crawl errors, {filtered_count - error_count} service/unclear)")
+    print(f"  ✅ Manufacturer : {stats['manufacturer']}")
+    print(f"  ❌ Service      : {stats['service']}")
+    print(f"  ❓ Unknown/Other: {stats['unknown']}")
+    print(f"  🚫 Page vide    : {stats['empty']} (site JS-only ou anti-bot)")
+    print(f"  🔴 Crawl error  : {stats['crawl_error']}")
 
     return qualified_leads
 

@@ -22,8 +22,13 @@ import re
 from pathlib import Path
 from datetime import datetime
 
+from dotenv import load_dotenv
+load_dotenv()
+
 sys.path.insert(0, str(Path(__file__).parent))
 from api_utils import load_and_merge_tracker_snapshots, cleanup_tracker_snapshots
+
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY', '')
 
 if sys.platform == 'win32':
     try:
@@ -441,12 +446,33 @@ def _run_pipeline_for_country(args, country, remaining_countries=None):
             sys.exit(1)
         _save_checkpoint(state_file, state, STEP2)
 
+    qualified_path = project_root / '.tmp' / 'qualified_leads.json'
+    qualified_count = 0
+    try:
+        with open(qualified_path, 'r', encoding='utf-8') as f:
+            qualified_count = len(json.load(f))
+    except Exception:
+        pass
+
+    print(f"\n📊 Qualification: {qualified_count}/{new_lead_count} leads qualifiés (Manufacturer)")
+
+    if qualified_count == 0:
+        print("\n⚠️  Aucun lead qualifié comme Manufacturer.")
+        if not ANTHROPIC_API_KEY:
+            print("   ❌ ANTHROPIC_API_KEY manquante — classification par mots-clés uniquement (peu fiable)")
+            print("   💡 Ajouter ANTHROPIC_API_KEY dans .env pour une classification LLM précise")
+        else:
+            print("   Les sites scrapes sont probablement des prestataires de services, pas des fabricants.")
+        if state_file.exists():
+            state_file.unlink()
+        return 0
+
     # ── STEP 3: Enrich contacts ──
     STEP3 = "step3_enrich"
     if args.resume and _is_step_done(state, STEP3):
         print(f"\n[RESUME] Skipping STEP 3 (already completed)")
     else:
-        enrich_cmd = f'"{PYTHON}" "{exec_dir}/enrich.py" --input "{project_root}/.tmp/qualified_leads.json"'
+        enrich_cmd = f'"{PYTHON}" "{exec_dir}/enrich.py" --input "{qualified_path}"'
         result = run_command("STEP 3: Enriching Contacts (Waterfall)", enrich_cmd, critical=False)
         if result == 'rate_limited':
             _pause_pipeline(state_file, state, 'Serper OSINT (enrichment)', remaining)
@@ -496,12 +522,20 @@ def _run_pipeline_for_country(args, country, remaining_countries=None):
         else:
             print("\n⚠️  HubSpot disabled. Data in .tmp/enriched_leads.json")
 
+    # Count enriched leads (actual synced to HubSpot)
+    enriched_count = 0
+    try:
+        with open(enriched_path, 'r', encoding='utf-8') as f:
+            enriched_count = len(json.load(f))
+    except Exception:
+        enriched_count = qualified_count
+
     # ── Report & cleanup ──
     try:
         merged_tracker = load_and_merge_tracker_snapshots()
         if merged_tracker.calls:
             report, report_path = merged_tracker.save_report(
-                num_leads=new_lead_count, output_dir=tmp_dir)
+                num_leads=enriched_count, output_dir=tmp_dir)
             print(report)
             print(f"\n📋 Rapport diagnostic: {report_path}")
             cleanup_tracker_snapshots()
@@ -511,7 +545,9 @@ def _run_pipeline_for_country(args, country, remaining_countries=None):
     if state_file.exists():
         state_file.unlink()
 
-    return new_lead_count
+    print(f"\n📊 Bilan: {new_lead_count} scrapes → {qualified_count} qualifies → {enriched_count} enrichis & synces HubSpot")
+
+    return enriched_count
 
 
 def main():
@@ -645,16 +681,19 @@ Examples:
     print(f"✅ PIPELINE COMPLETE!")
     print(f"{'='*60}")
     print(f"⏱️  Total time: {duration:.1f}s ({duration/60:.1f} min)")
-    print(f"📊 Total leads generated: {total_leads}")
+    print(f"📊 Leads synces HubSpot: {total_leads}")
     if multi:
         print(f"   Countries processed: {', '.join(country_list)}")
-    if not args.no_hubspot:
+    if total_leads == 0:
+        print(f"   ⚠️  Aucun lead qualifie comme Manufacturer dans cette recherche")
+    if not args.no_hubspot and total_leads > 0:
         print(f"   - HubSpot CRM: Contacts synced")
-    if args.use_excel or (not args.no_hubspot and not args.no_backup):
+    if total_leads > 0 and (args.use_excel or (not args.no_hubspot and not args.no_backup)):
         print(f"   - Excel: Generate_leads.xlsx")
-    print(f"\n💡 Next steps:")
-    print(f"   1. Check HubSpot CRM")
-    print(f"   2. Generate PDFs: python execution/generate_pdf.py --company 'Name'")
+    if total_leads > 0:
+        print(f"\n💡 Next steps:")
+        print(f"   1. Check HubSpot CRM")
+        print(f"   2. Generate PDFs: python execution/generate_pdf.py --company 'Name'")
 
 
 if __name__ == '__main__':
