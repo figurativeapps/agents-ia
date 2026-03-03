@@ -15,10 +15,11 @@ import requests
 import argparse
 import re
 import threading
+import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dotenv import load_dotenv
-from time import sleep
+from time import sleep, time
 
 # Fix Windows console encoding issues
 if sys.platform == 'win32':
@@ -39,6 +40,7 @@ load_dotenv()
 
 # Local imports
 from api_utils import call_with_retry, sleep_between_calls, save_tracker_snapshot, api_tracker
+from sync_hubspot import upsert_single_lead
 
 FIRECRAWL_API_KEY = os.getenv('FIRECRAWL_API_KEY')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
@@ -199,9 +201,47 @@ CONTACT_PAGE_SUFFIXES = [
 
 FIRECRAWL_DELAY = 4  # 16 req/min Hobby tier → 3.75s minimum, +0.25s safety
 FIRECRAWL_API_URL = "https://api.firecrawl.dev/v1/scrape"
+SCRAPE_CACHE_TTL = 7 * 24 * 3600  # 7 days
+
+
+def _cache_path(url: str) -> Path:
+    key = hashlib.md5(url.encode()).hexdigest()
+    cache_dir = Path(__file__).parent.parent / ".tmp" / "scrape_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f"{key}.json"
+
+
+def _load_cached_scrape(url: str):
+    """Return cached markdown content for url, or None if missing/expired."""
+    p = _cache_path(url)
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if time() - data.get("ts", 0) > SCRAPE_CACHE_TTL:
+            return None
+        return data.get("content", "")
+    except Exception:
+        return None
+
+
+def _save_cached_scrape(url: str, content: str):
+    """Persist scraped markdown to disk cache."""
+    try:
+        _cache_path(url).write_text(
+            json.dumps({"url": url, "ts": time(), "content": content}, ensure_ascii=False),
+            encoding="utf-8"
+        )
+    except Exception:
+        pass
+
 
 def _scrape_page(url, headers):
-    """Scrape a single page via Firecrawl v1. Respects global semaphore + rate limit delay."""
+    """Scrape a single page via Firecrawl v1. Checks disk cache first to avoid re-billing."""
+    cached = _load_cached_scrape(url)
+    if cached is not None:
+        return cached
+
     payload = {'url': url, 'formats': ['markdown']}
     sem = _firecrawl_semaphore
 
@@ -218,7 +258,9 @@ def _scrape_page(url, headers):
         )
         if resp.status_code == 200:
             data = resp.json()
-            return data.get('data', {}).get('markdown', '')
+            content = data.get('data', {}).get('markdown', '')
+            _save_cached_scrape(url, content)
+            return content
         if resp.status_code in (402, 403):
             raise QuotaExhaustedError(
                 f"Firecrawl quota exhausted (HTTP {resp.status_code}). "
@@ -391,6 +433,27 @@ def _qualify_single_lead(index, lead, total, industry=''):
     return lead, False, reason
 
 
+_QUALIFIED_PATH = Path(__file__).parent.parent / '.tmp' / 'qualified_leads.json'
+_qualified_lock = threading.Lock()
+
+
+def _append_qualified_lead(lead):
+    """Append a single qualified lead to disk (incremental save) and push to HubSpot."""
+    with _qualified_lock:
+        existing = []
+        if _QUALIFIED_PATH.exists():
+            try:
+                existing = json.loads(_QUALIFIED_PATH.read_text(encoding='utf-8'))
+            except Exception:
+                existing = []
+        existing.append(lead)
+        _QUALIFIED_PATH.write_text(json.dumps(existing, ensure_ascii=False, indent=2), encoding='utf-8')
+
+    ok = upsert_single_lead(lead)
+    status = "HubSpot OK" if ok else "HubSpot FAIL"
+    _safe_print(f"    -> Qualified & saved ({status})")
+
+
 def process_leads(input_file, workers=3, industry=''):
     """Process all leads and qualify their websites in parallel.
 
@@ -408,6 +471,9 @@ def process_leads(input_file, workers=3, industry=''):
     mode = "LLM classification" if ANTHROPIC_API_KEY else "keyword classification"
     total = len(leads)
     print(f"Processing {total} leads ({mode}, {workers} workers)...\n")
+
+    if _QUALIFIED_PATH.exists():
+        _QUALIFIED_PATH.write_text('[]', encoding='utf-8')
 
     qualified_leads = []
     filtered_count = 0
@@ -428,6 +494,7 @@ def process_leads(input_file, workers=3, industry=''):
                 break
             if is_qualified:
                 qualified_leads.append(lead)
+                _append_qualified_lead(lead)
             else:
                 filtered_count += 1
                 if reason and 'Crawl error' in (lead.get('Justification') or ''):
@@ -453,6 +520,7 @@ def process_leads(input_file, workers=3, industry=''):
                     break
                 if is_qualified:
                     qualified_leads.append(lead)
+                    _append_qualified_lead(lead)
                 else:
                     filtered_count += 1
                     if lead.get('Justification', '').startswith('Crawl error'):

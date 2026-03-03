@@ -472,6 +472,98 @@ def _batch_associate_contacts_to_companies(client, plans):
 
 
 # ───────────────────────────────────────────────────────────────
+# Single-lead upsert (called from qualify_site.py)
+# ───────────────────────────────────────────────────────────────
+
+_hubspot_client = None
+
+
+def upsert_single_lead(lead):
+    """Create or update a single lead in HubSpot (company + contact + association).
+
+    Designed to be called incrementally during qualification.
+    Returns True on success, False on error.
+    """
+    global _hubspot_client
+    if not HUBSPOT_API_KEY:
+        return False
+
+    try:
+        if _hubspot_client is None:
+            _hubspot_client = init_hubspot_client()
+        client = _hubspot_client
+    except Exception:
+        return False
+
+    company_name = lead.get('Nom_Entreprise', '')
+    email = lead.get('Email_Generique', '').strip()
+
+    try:
+        company_id = _search_company(client, lead)
+        if not company_id and company_name:
+            props = _build_company_properties(lead)
+            company = sdk_call_with_retry(
+                lambda p=props: client.crm.companies.basic_api.create(
+                    simple_public_object_input_for_create=CompanyInput(properties=p)
+                ),
+                label="HubSpot company-create"
+            )
+            company_id = company.id
+
+        contact_id = _search_contact_by_email(client, email)
+        if not contact_id and not email:
+            contact_id = _search_contact_by_company(client, lead)
+
+        props = _build_contact_properties(lead)
+        if contact_id:
+            update_props = _build_update_properties(lead)
+            if update_props:
+                sdk_call_with_retry(
+                    lambda cid=contact_id, p=update_props: client.crm.contacts.basic_api.update(
+                        contact_id=cid,
+                        simple_public_object_input={"properties": p}
+                    ),
+                    label="HubSpot contact-update"
+                )
+        else:
+            contact = sdk_call_with_retry(
+                lambda p=props: client.crm.contacts.basic_api.create(
+                    simple_public_object_input_for_create=SimplePublicObjectInputForCreate(properties=p)
+                ),
+                label="HubSpot contact-create"
+            )
+            contact_id = contact.id
+
+        if contact_id and company_id:
+            try:
+                from hubspot.crm.associations.v4.models import PublicDefaultAssociationMultiPost
+                from hubspot.crm.associations.v4 import BatchInputPublicDefaultAssociationMultiPost
+                assoc_input = BatchInputPublicDefaultAssociationMultiPost(
+                    inputs=[PublicDefaultAssociationMultiPost(
+                        _from={"id": str(contact_id)}, to={"id": str(company_id)}
+                    )]
+                )
+                sdk_call_with_retry(
+                    lambda ai=assoc_input: client.crm.associations.v4.batch_api.create_default(
+                        from_object_type="contacts", to_object_type="companies",
+                        batch_input_public_default_association_multi_post=ai
+                    ),
+                    label="HubSpot association"
+                )
+            except Exception:
+                pass
+
+        lead['Statut_Sync'] = 'Synced'
+        lead['HubSpot_ID'] = str(contact_id)
+        return True
+
+    except Exception as e:
+        lead['Statut_Sync'] = 'Failed'
+        logging.warning(f"HubSpot upsert failed for {company_name}: {str(e)[:100]}")
+        return False
+
+
+# ───────────────────────────────────────────────────────────────
 # Main sync orchestrator
 # ───────────────────────────────────────────────────────────────
 
