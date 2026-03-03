@@ -202,6 +202,9 @@ CONTACT_PAGE_SUFFIXES = [
 FIRECRAWL_DELAY = 4  # 16 req/min Hobby tier → 3.75s minimum, +0.25s safety
 FIRECRAWL_API_URL = "https://api.firecrawl.dev/v1/scrape"
 SCRAPE_CACHE_TTL = 7 * 24 * 3600  # 7 days
+MAX_CONSECUTIVE_SUBPAGE_FAILURES = 2
+
+_dead_domains = set()
 
 
 def _cache_path(url: str) -> Path:
@@ -236,14 +239,27 @@ def _save_cached_scrape(url: str, content: str):
         pass
 
 
-def _scrape_page(url, headers):
+def _extract_domain(url):
+    from urllib.parse import urlparse
+    try:
+        return urlparse(url).netloc.replace('www.', '').lower()
+    except Exception:
+        return ''
+
+
+def _scrape_page(url, headers, max_retries=None):
     """Scrape a single page via Firecrawl v1. Checks disk cache first to avoid re-billing."""
+    domain = _extract_domain(url)
+    if domain and domain in _dead_domains:
+        raise CrawlError(f"Domain blacklisted (dead): {domain}")
+
     cached = _load_cached_scrape(url)
     if cached is not None:
         return cached
 
     payload = {'url': url, 'formats': ['markdown']}
     sem = _firecrawl_semaphore
+    retry_kwargs = {"max_retries": max_retries} if max_retries is not None else {}
 
     if sem:
         sem.acquire()
@@ -254,7 +270,8 @@ def _scrape_page(url, headers):
                 FIRECRAWL_API_URL,
                 headers=headers, json=payload, timeout=30
             ),
-            label=f"Firecrawl scrape {url}"
+            label=f"Firecrawl scrape {url}",
+            **retry_kwargs
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -280,28 +297,45 @@ def _find_emails_deep(base_url, headers):
     Crawl the main page + common contact/legal pages to find emails.
     Returns all unique emails found across pages.
     Raises CrawlError if the homepage itself fails (retryable at caller level).
+    Blacklists domain on homepage failure; fails fast after consecutive sub-page errors.
     """
     all_emails = []
+    domain = _extract_domain(base_url)
 
     # 1) Scrape homepage — CrawlError propagates to caller for retry
     _safe_print(f"    Crawling homepage...")
-    homepage_content = _scrape_page(base_url, headers)
+    try:
+        homepage_content = _scrape_page(base_url, headers)
+    except CrawlError:
+        if domain:
+            _dead_domains.add(domain)
+            _safe_print(f"    Domain blacklisted (dead): {domain}")
+        raise
+
     all_emails.extend(extract_emails(homepage_content))
 
     if all_emails:
         return all_emails, homepage_content
 
-    # 2) No emails on homepage — try contact/legal pages (tolerant of failures)
+    # 2) No emails on homepage — try contact/legal pages (reduced retries, fail-fast)
     from urllib.parse import urlparse
     parsed = urlparse(base_url)
     base = f"{parsed.scheme}://{parsed.netloc}"
 
+    consecutive_failures = 0
     for suffix in CONTACT_PAGE_SUFFIXES:
         page_url = base + suffix
         _safe_print(f"    Crawling {page_url}...")
         try:
-            content = _scrape_page(page_url, headers)
+            content = _scrape_page(page_url, headers, max_retries=1)
+            consecutive_failures = 0
         except CrawlError:
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_SUBPAGE_FAILURES:
+                if domain:
+                    _dead_domains.add(domain)
+                _safe_print(f"    Skipping remaining pages ({consecutive_failures} consecutive failures)")
+                break
             continue
         if content:
             found = extract_emails(content)
@@ -385,7 +419,7 @@ def qualify_website(url, industry=''):
     }
 
 
-MAX_CRAWL_RETRIES = 2
+MAX_CRAWL_RETRIES = 1
 CRAWL_RETRY_DELAY = 5
 
 
@@ -520,6 +554,7 @@ def process_leads(input_file, workers=3, industry=''):
 
     _seen_domains.clear()
     _seen_names.clear()
+    _dead_domains.clear()
 
     qualified_leads = []
     filtered_count = 0
