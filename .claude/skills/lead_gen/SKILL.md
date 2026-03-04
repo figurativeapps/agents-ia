@@ -131,7 +131,7 @@ python execution/sync_hubspot.py --input .tmp/enriched_leads.json --write-log
 | `execution/sync_hubspot.py` | Push leads to HubSpot (upsert, default) | JSON → HubSpot CRM + sync log |
 | `execution/save_to_excel.py` | Save leads to Excel (backup or `--use-excel`) | Data → `Generate_leads.xlsx` |
 | `execution/sync_from_hubspot.py` | Pull updates from HubSpot (Excel mode only) | HubSpot → Excel |
-| `execution/watch_lead_status.py` | Two-phase prospection watcher | HubSpot ↔ ClickUp ↔ R2 |
+| `execution/watch_lead_status.py` | Two-phase prospection watcher (re-trigger si subtask closed) | HubSpot ↔ ClickUp ↔ R2 |
 | `execution/pipeline_watcher.py` | VPS cron: resume paused pipelines | State → API test → Resume |
 | `execution/run_pipeline.py` | Master pipeline orchestrator (expansion + pause/resume) | Args → Full pipeline |
 | `execution/dashboard_server.py` | Web dashboard: launch, monitor, API usage (port 8080) | Browser → FastAPI → `.tmp/` |
@@ -159,6 +159,17 @@ python execution/sync_hubspot.py --input .tmp/enriched_leads.json --write-log
   - `GET /api/logs` — Dernieres lignes du log pipeline
   - `POST /api/launch` — Lancer un pipeline `{industry, countries[], max_leads}`
   - `POST /api/stop` — Arreter le pipeline en cours
+
+---
+
+## Prospection Watcher — Re-trigger
+
+Si une subtask ClickUp est terminée par erreur (résultat incomplet), l'utilisateur peut **remettre `hs_lead_status=OPEN`** sur le contact HubSpot. Le watcher :
+1. Détecte que l'ancienne subtask est closed/complete
+2. Efface `clickup_prospection_task_id` sur le contact
+3. Crée une nouvelle subtask (retour en Phase 1)
+
+Pas besoin de supprimer manuellement l'ancienne subtask ni de vider des champs.
 
 ---
 

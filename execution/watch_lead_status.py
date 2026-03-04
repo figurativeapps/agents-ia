@@ -189,8 +189,24 @@ def find_all_open_contacts() -> tuple[List[Dict], List[Dict]]:
         }
 
         if subtask_id:
-            entry["subtask_id"] = subtask_id
-            pending_completion.append(entry)
+            # Check if old subtask is already completed — if so, allow re-trigger
+            task = get_task_full(subtask_id)
+            task_status = task.get("status", "") if task else ""
+            task_status_type = task.get("status_type", "") if task else ""
+            is_closed = task_status in ("complete", "closed", "done") or task_status_type == "closed" or task is None
+
+            if is_closed:
+                logger.info(f"  Subtask {subtask_id} is '{task_status}' — clearing for re-trigger")
+                clear_contact_subtask_id(contact.id)
+                entry["prospect_info"] = {
+                    "objet": props.get("prospect_objet", ""),
+                    "site_url": props.get("prospect_site_url", ""),
+                    "description": props.get("prospect_description", ""),
+                }
+                new_leads.append(entry)
+            else:
+                entry["subtask_id"] = subtask_id
+                pending_completion.append(entry)
         else:
             entry["prospect_info"] = {
                 "objet": props.get("prospect_objet", ""),
@@ -208,6 +224,19 @@ def find_all_open_contacts() -> tuple[List[Dict], List[Dict]]:
 # =============================================================================
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def clear_contact_subtask_id(contact_id: str):
+    """Clear the clickup_prospection_task_id so a new subtask can be created."""
+    client = get_hubspot_client()
+    from hubspot.crm.contacts import SimplePublicObjectInput
+    client.crm.contacts.basic_api.update(
+        contact_id=contact_id,
+        simple_public_object_input=SimplePublicObjectInput(
+            properties={"clickup_prospection_task_id": ""}
+        )
+    )
+    logger.info(f"  Cleared subtask ID on contact {contact_id}")
+
+
 def mark_contact_processed(contact_id: str, subtask_id: str) -> bool:
     """Write clickup_prospection_task_id on the HubSpot contact."""
     client = get_hubspot_client()

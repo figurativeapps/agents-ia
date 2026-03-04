@@ -48,3 +48,4 @@ Two-phase polling script running on VPS:
 
 - **Phase 1 (NEW→OPEN)**: User writes a HubSpot note on the contact with description, client site URL, and image(s), then sets `hs_lead_status=OPEN`. Script parses the note (extracts text, URL, images), creates ClickUp subtask under Prospection (86c8cryhk) with prospect info comment + custom fields "lien ra" and "Titre snapshot" (both empty).
 - **Phase 2 (COMPLETE→IN_PROGRESS)**: Admin fills "lien ra" with AR link, "Titre snapshot" with overlay title, attaches snapshot.png + qrcode.png, sets subtask to COMPLETE. Script generates PDF (overlay_pdf with "Titre snapshot" as title), uploads to R2, creates HubSpot note, sets `hs_lead_status=IN_PROGRESS`.
+- **Re-trigger**: Si une subtask est terminée par erreur ou que le résultat est incomplet, remettre `hs_lead_status=OPEN`. Le script détecte que l'ancienne subtask est closed/complete, efface `clickup_prospection_task_id`, et crée une nouvelle subtask (retour en Phase 1).
