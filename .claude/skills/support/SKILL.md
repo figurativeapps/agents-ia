@@ -53,7 +53,7 @@ Webhook `POST /webhook/request` avec payload :
 - **Complétude requise :** Au moins 1 fichier visuel + description suffisante
 - **Output :** `credits_estimes`, `completeness`, `missing_info`
 
-### Step 5b : Communication client (SMTP + HubSpot)
+### Step 5b : Communication client (manuelle)
 Selon le résultat de l'analyse :
 
 | Statut | Action | Template |
@@ -62,19 +62,16 @@ Selon le résultat de l'analyse :
 | `pending_credits` | Demande complète → Devis envoyé au client | Template 2 ou 3 selon crédits |
 | `pending_admin` | Cas complexe → Notification admin | Template 4 |
 
-**Envoi email** : `send_email_to_contact()` dans `hubspot_conversation.py` fait 2 choses :
-1. Envoi réel via SMTP (le prospect reçoit l'email dans sa boîte)
-2. Consignation via API Engagements HubSpot (tracking CRM)
+**Envoi email** : L'email est consigné dans HubSpot via API Engagements, puis **envoyé manuellement** au client (SMTP non configuré).
 
-L'adresse SMTP (`SMTP_USER`) doit être la même que l'email connecté à HubSpot pour que les réponses du prospect soient auto-capturées comme emails INCOMING.
-
-### Step 6 : Subtask ClickUp (après validation client)
-- **Condition :** Client a validé le devis
-- **Script :** `execution/clickup_subtask.py`
-- **Parent Task :** 86c7r48ha
-- **Nom :** `Demande {user_email}`
-- **Output :** `subtask_id`
-- **Propriété HubSpot mise à jour :** `validation_status` → `validated`
+### Step 6 : Validation manuelle → Watcher automatique
+- L'utilisateur lit la réponse du client et change `validation_status` dans l'UI HubSpot :
+  - **"Validé"** (`validated`) → Le watcher crée automatiquement une subtask ClickUp
+  - **"Refusé"** (`rejected`) → Le watcher ferme automatiquement le ticket
+- **Script watcher :** `execution/watch_ticket_validation.py`
+- **Contenu de la subtask :** Dernière note du contact + `credits_estimes`
+- **Parent Task ClickUp :** `86c7r48ha`
+- **Anti-doublon :** Un ticket avec `clickup_subtask_id` déjà rempli est ignoré
 
 ### Step 7 : Notification admin
 - **Script :** `execution/send_notification.py`
@@ -83,27 +80,24 @@ L'adresse SMTP (`SMTP_USER`) doit être la même que l'email connecté à HubSpo
 
 ---
 
-## Validation Workflow (polling)
-- **Script :** `execution/validation_workflow.py`
-- **Action :** Surveille les tickets en attente de réponse client (INCOMING emails via HubSpot)
-- **Détection réponses :**
-  - Validation : "Je valide", "OK", "D'accord", "Parfait", "On y va" → `process_validation()` → Crée subtask ClickUp
-  - Refus : "Je refuse", "Trop cher", "Non merci", "J'annule" → `process_rejection()` → Ferme le ticket
-  - Questions : présence de "?", "Pourquoi", "Comment" → Log pour traitement manuel
-  - Info complémentaire (si `pending_info`) → `process_info_response()` → Renvoie un devis
-- **Après validation :** Subtask ClickUp créée + email de confirmation envoyé au prospect
+## Ticket Validation Watcher (`watch_ticket_validation.py`)
 
----
+Script de polling qui surveille les changements de `validation_status` sur les tickets HubSpot.
 
-## Configuration SMTP (requis pour l'envoi d'emails)
+**Flux :**
+1. Ticket créé avec `validation_status = "pending_info"` (En attente d'infos)
+2. L'utilisateur envoie manuellement le devis au client
+3. Le client répond → l'utilisateur passe `validation_status` à **"Validé"** ou **"Refusé"** dans HubSpot
+4. Le watcher détecte et agit :
 
-Variables `.env` obligatoires :
-- `SMTP_HOST` : Serveur SMTP (ex: `smtp.gmail.com` pour Google Workspace)
-- `SMTP_PORT` : Port (587 pour STARTTLS)
-- `SMTP_USER` : Adresse email d'envoi (doit être connectée à HubSpot)
-- `SMTP_PASSWORD` : Mot de passe d'application (Google Workspace → App passwords)
+| validation_status | Action du watcher |
+|-------------------|-------------------|
+| `validated` (+ pas de `clickup_subtask_id`) | Lit dernière note du contact → Crée subtask ClickUp → Stocke `clickup_subtask_id` |
+| `rejected` (+ ticket encore ouvert) | Ferme le ticket (stage "4") |
 
-Sans SMTP configuré, les emails sont uniquement consignés dans HubSpot mais pas envoyés au prospect.
+**Anti-doublons :**
+- Validé : ignoré si `clickup_subtask_id` déjà rempli
+- Refusé : ignoré si ticket déjà fermé (stage "4")
 
 ---
 
@@ -116,14 +110,11 @@ uvicorn execution.webhook_server:app --host 0.0.0.0 --port 5000
 # Tester le webhook
 python tests/test_webhook_http.py
 
-# Lancer le polling de validation (surveille les réponses clients)
-python execution/validation_workflow.py --mode poll --interval 60
+# Lancer le watcher de validation tickets (polling continu)
+python execution/watch_ticket_validation.py --mode poll --interval 60
 
-# Vérifier les tickets en attente
-python execution/validation_workflow.py --mode list-pending
-
-# Vérifier un ticket spécifique
-python execution/validation_workflow.py --mode check --ticket-id 123456
+# Un seul passage (test)
+python execution/watch_ticket_validation.py --mode once
 ```
 
 ---
@@ -134,8 +125,8 @@ python execution/validation_workflow.py --mode check --ticket-id 123456
 - Upload fichier échoue → Créer ticket sans fichiers, ajouter note
 - HubSpot rate limit → Retry backoff exponentiel (max 3)
 - ClickUp indisponible → Logger, ticket HubSpot reste source de vérité
-- SMTP non configuré → Email consigné dans HubSpot uniquement (warning dans les logs)
-- SMTP échoue → Email quand même consigné dans HubSpot, `smtp_sent: false` dans le retour
+- Pas de note sur le contact quand validé → Skip, retry au prochain cycle
+- Pas de contact associé au ticket → Skip avec warning
 
 ---
 
@@ -150,7 +141,8 @@ python execution/validation_workflow.py --mode check --ticket-id 123456
 | `execution/hubspot_ticket.py` | Manage contacts, tickets, notes | Data → HubSpot objects |
 | `execution/hubspot_conversation.py` | Read/send emails via HubSpot + SMTP | Email ↔ HubSpot |
 | `execution/clickup_subtask.py` | Create modeling subtask in ClickUp | Data → ClickUp task |
-| `execution/validation_workflow.py` | Poll pending tickets, process client responses | Tickets → Validation |
+| `execution/watch_ticket_validation.py` | Watch validation_status changes, create ClickUp subtasks | Ticket validated/rejected → ClickUp/Close |
+| `execution/validation_workflow.py` | (Legacy) Poll pending tickets via email detection | Tickets → Validation |
 | `execution/send_notification.py` | Email admin notification via SMTP | Data → SMTP |
 | `execution/diagnose_hubspot_properties.py` | Debug HubSpot fields | — |
 
