@@ -43,8 +43,9 @@ from hubspot_ticket import (
     get_hubspot_client,
     update_ticket_property,
     ensure_custom_properties,
+    create_note,
 )
-from clickup_subtask import create_subtask, get_task_full
+from clickup_subtask import create_subtask, get_task_full, get_custom_field_value
 
 HUBSPOT_HUB_ID = os.getenv("HUBSPOT_HUB_ID", "147476643")
 
@@ -287,19 +288,64 @@ def find_completed_subtask_tickets() -> List[Dict]:
 
         if is_complete:
             ticket["subtask_status"] = task_status
+            ticket["_clickup_task"] = task
             completed.append(ticket)
 
     return completed
 
 
 def process_completed_subtask(ticket: Dict) -> bool:
-    """Close a ticket whose ClickUp subtask is complete."""
+    """
+    Process a completed ClickUp subtask:
+    1. Extract "lien ra" (AR link) from custom fields
+    2. Extract all attached file URLs from the subtask
+    3. Create a HubSpot note on the contact with AR link + files
+    4. Close the ticket
+    """
     ticket_id = ticket["ticket_id"]
     subtask_id = ticket.get("clickup_subtask_id", "")
+    contact_id = ticket.get("contact_id")
     subject = ticket.get("subject", "")
 
-    logger.info(f"Subtask {subtask_id} complete → closing ticket #{ticket_id}: {subject}")
+    logger.info(f"Subtask {subtask_id} complete → processing ticket #{ticket_id}: {subject}")
 
+    # Use cached task if available, otherwise fetch
+    task = ticket.get("_clickup_task") or get_task_full(subtask_id)
+    if not task:
+        logger.error(f"Ticket #{ticket_id}: could not retrieve subtask {subtask_id}")
+        return False
+
+    # --- 1. Extract "lien ra" custom field ---
+    lien_ra = get_custom_field_value(task, "lien ra")
+
+    # --- 2. Extract attachment URLs ---
+    attachments = task.get("attachments", [])
+    attachment_urls = [att["url"] for att in attachments if att.get("url")]
+
+    # --- 3. Create HubSpot note if we have a contact and any content ---
+    if contact_id and (lien_ra or attachment_urls):
+        note_urls = []
+        if lien_ra:
+            note_urls.append(lien_ra)
+        note_urls.extend(attachment_urls)
+
+        note_result = create_note(
+            contact_id=contact_id,
+            objet=subject or "Modélisation terminée",
+            fichiers_urls=note_urls,
+            ticket_id=ticket_id,
+            type_demande="MODELISATION",
+        )
+        if note_result.get("success"):
+            logger.info(f"Ticket #{ticket_id}: HubSpot note created (AR link + {len(attachment_urls)} file(s))")
+        else:
+            logger.warning(f"Ticket #{ticket_id}: note creation failed — {note_result.get('error')}")
+    elif not contact_id:
+        logger.warning(f"Ticket #{ticket_id}: no associated contact — skipping note creation")
+    else:
+        logger.info(f"Ticket #{ticket_id}: no AR link or attachments on subtask — skipping note")
+
+    # --- 4. Close the ticket ---
     result = update_ticket_property(ticket_id, "hs_pipeline_stage", "4")
     if result.get("success"):
         logger.info(f"Ticket #{ticket_id} closed (modeling complete)")
