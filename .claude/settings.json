@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git ls-files:*)",
+      "mcp__claude_ai_HubSpot__search_crm_objects",
+      "mcp__claude_ai_HubSpot__manage_crm_objects",
+      "Bash(ls -d */)",
+      "Bash(grep -v -E '^\\(execution/|tests/|docs/|templates/|output/|\\\\.claude/|\\\\.tmp/|\\\\.git/|__pycache__/\\)$')",
+      "Bash(ls *.pyd *.so _cffi*)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\jorda\\agents_ia\\google",
+      "C:\\Users\\jorda\\agents_ia"
+    ]
+  }
+}

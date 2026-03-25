@@ -512,41 +512,46 @@ def create_note(
     objet: str,
     fichiers_urls: list,
     ticket_id: str = None,
-    type_demande: str = "MODELISATION"
+    type_demande: str = "MODELISATION",
+    body: str = None,
 ) -> dict:
     """
     Create a Note on a contact with file URLs.
-    
+
     This note will appear in the contact's Activity timeline,
     making file history visible on the contact record.
-    
+
     Args:
         contact_id: HubSpot contact ID
         objet: Subject/title of the request
         fichiers_urls: List of R2 public URLs
         ticket_id: Optional ticket ID to associate the note with
         type_demande: Type of request (for note title)
-    
+        body: Optional custom HTML body. If provided, used instead of auto-generated body.
+
     Returns:
         {"note_id": str, "success": bool} or {"error": str}
     """
-    if not fichiers_urls:
+    if not fichiers_urls and not body:
         return {"note_id": None, "success": True, "message": "No files to note"}
-    
+
     client = get_hubspot_client()
     hub_id = HUBSPOT_HUB_ID
-    
-    # Build note content with HTML formatting (HubSpot notes support HTML)
-    note_body = f"<strong>📁 Fichiers reçus - {type_demande}</strong><br><br>"
-    note_body += f"<strong>Objet:</strong> {objet}<br><br>"
-    note_body += "<strong>Fichiers:</strong><br>"
-    
-    for url in fichiers_urls:
-        # Extract filename from URL
-        filename = url.split("/")[-1] if "/" in url else url
-        note_body += f'• <a href="{url}">{filename}</a><br>'
-    
-    note_body += f"<br><em>Reçu le {datetime.now().strftime('%d/%m/%Y à %H:%M')}</em>"
+
+    if body:
+        note_body = body
+    else:
+        # Build note content with HTML formatting (HubSpot notes support HTML)
+        note_body = f"<strong>📁 Fichiers reçus - {type_demande}</strong><br><br>"
+        note_body += f"<strong>Objet:</strong> {objet}<br><br>"
+        note_body += "<strong>Fichiers:</strong><br>"
+
+        for url in fichiers_urls:
+            # Extract filename from URL
+            filename = url.split("/")[-1] if "/" in url else url
+            note_body += f'• <a href="{url}">{filename}</a><br>'
+
+        note_body += f"<br><em>Reçu le {datetime.now().strftime('%d/%m/%Y à %H:%M')}</em>"
     
     # Note properties (hs_timestamp must be Unix timestamp in milliseconds)
     properties = {

@@ -189,14 +189,11 @@ def find_all_open_contacts() -> tuple[List[Dict], List[Dict]]:
         }
 
         if subtask_id:
-            # Check if old subtask is already completed — if so, allow re-trigger
+            # Check if subtask still exists in ClickUp
             task = get_task_full(subtask_id)
-            task_status = task.get("status", "") if task else ""
-            task_status_type = task.get("status_type", "") if task else ""
-            is_closed = task_status in ("complete", "closed", "done") or task_status_type == "closed" or task is None
-
-            if is_closed:
-                logger.info(f"  Subtask {subtask_id} is '{task_status}' — clearing for re-trigger")
+            if task is None:
+                # Subtask deleted or not found → re-trigger Phase 1
+                logger.info(f"  Subtask {subtask_id} not found — clearing for re-trigger")
                 clear_contact_subtask_id(contact.id)
                 entry["prospect_info"] = {
                     "objet": props.get("prospect_objet", ""),
@@ -205,6 +202,7 @@ def find_all_open_contacts() -> tuple[List[Dict], List[Dict]]:
                 }
                 new_leads.append(entry)
             else:
+                # Subtask exists → Phase 2 will check if it's complete
                 entry["subtask_id"] = subtask_id
                 pending_completion.append(entry)
         else:
@@ -552,6 +550,7 @@ def process_completed_subtask(contact: Dict) -> bool:
         objet=f"Prospection — {company}",
         fichiers_urls=all_urls,
         type_demande="PROSPECTION",
+        body=note_body,
     )
 
     # --- 6. Update lead status → IN_PROGRESS ---
@@ -565,6 +564,8 @@ def process_completed_subtask(contact: Dict) -> bool:
             ),
         )
         logger.info(f"  ✅ Lead status → IN_PROGRESS for contact {contact['contact_id']}")
+        # Clear subtask ID so re-trigger (OPEN again) creates a fresh subtask
+        clear_contact_subtask_id(contact["contact_id"])
     except Exception as e:
         logger.error(f"  ❌ Failed to update lead status: {e}")
 
