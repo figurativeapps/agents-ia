@@ -372,39 +372,48 @@ def create_prospection_subtask(
 # =============================================================================
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def _get_task_full_inner(task_id: str) -> dict | None:
+    """Inner function with retry — raises on transient errors so @retry retries."""
+    url = f"{CLICKUP_API_BASE}/task/{task_id}?include_subtasks=false"
+    response = requests.get(url, headers=get_headers(), timeout=30)
+    if response.status_code == 200:
+        data = response.json()
+        status_obj = data.get("status", {})
+        status_name = status_obj.get("status", "").lower() if isinstance(status_obj, dict) else str(status_obj).lower()
+        status_type = status_obj.get("type", "").lower() if isinstance(status_obj, dict) else ""
+        return {
+            "id": data.get("id"),
+            "name": data.get("name"),
+            "status": status_name,
+            "status_type": status_type,
+            "attachments": data.get("attachments", []),
+            "description": data.get("description", ""),
+            "markdown_description": data.get("markdown_description", ""),
+            "custom_fields": data.get("custom_fields", []),
+            "url": data.get("url", f"https://app.clickup.com/t/{task_id}"),
+        }
+    elif response.status_code == 404:
+        return None
+    else:
+        raise requests.exceptions.RequestException(
+            f"ClickUp API error {response.status_code}: {response.text[:200]}"
+        )
+
+
 def get_task_full(task_id: str) -> dict | None:
     """
     Get full task data including status and attachments.
 
-    Returns dict with keys: id, name, status, status_type, attachments, url — or None.
+    Returns:
+      - dict with task keys (success)
+      - None (task confirmed deleted — 404)
+      - dict {"error": "transient"} (API temporarily unavailable after retries)
     """
-    url = f"{CLICKUP_API_BASE}/task/{task_id}?include_subtasks=false"
     try:
-        response = requests.get(url, headers=get_headers(), timeout=30)
-        if response.status_code == 200:
-            data = response.json()
-            status_obj = data.get("status", {})
-            status_name = status_obj.get("status", "").lower() if isinstance(status_obj, dict) else str(status_obj).lower()
-            status_type = status_obj.get("type", "").lower() if isinstance(status_obj, dict) else ""
-            return {
-                "id": data.get("id"),
-                "name": data.get("name"),
-                "status": status_name,
-                "status_type": status_type,
-                "attachments": data.get("attachments", []),
-                "description": data.get("description", ""),
-                "markdown_description": data.get("markdown_description", ""),
-                "custom_fields": data.get("custom_fields", []),
-                "url": data.get("url", f"https://app.clickup.com/t/{task_id}"),
-            }
-        elif response.status_code == 404:
-            return None
-        else:
-            print(f"⚠️  get_task_full error: {response.status_code}")
-            return None
+        return _get_task_full_inner(task_id)
     except Exception as e:
-        print(f"❌ get_task_full error: {str(e)[:200]}")
-        return None
+        print(f"⚠️  get_task_full failed after retries: {str(e)[:200]}")
+        return {"error": "transient"}
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))

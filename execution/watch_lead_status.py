@@ -192,8 +192,8 @@ def find_all_open_contacts() -> tuple[List[Dict], List[Dict]]:
             # Check if subtask still exists in ClickUp
             task = get_task_full(subtask_id)
             if task is None:
-                # Subtask deleted or not found → re-trigger Phase 1
-                logger.info(f"  Subtask {subtask_id} not found — clearing for re-trigger")
+                # Confirmed 404 — subtask deleted → re-trigger Phase 1
+                logger.info(f"  Subtask {subtask_id} not found (404) — clearing for re-trigger")
                 clear_contact_subtask_id(contact.id)
                 entry["prospect_info"] = {
                     "objet": props.get("prospect_objet", ""),
@@ -201,6 +201,9 @@ def find_all_open_contacts() -> tuple[List[Dict], List[Dict]]:
                     "description": props.get("prospect_description", ""),
                 }
                 new_leads.append(entry)
+            elif isinstance(task, dict) and task.get("error") == "transient":
+                # API temporarily unavailable — skip, don't clear anything
+                logger.warning(f"  ⚠️ Could not verify subtask {subtask_id} — skipping (transient error)")
             else:
                 # Subtask exists → Phase 2 will check if it's complete
                 entry["subtask_id"] = subtask_id
