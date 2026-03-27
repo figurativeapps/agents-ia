@@ -266,6 +266,26 @@ def get_custom_field_value(task: dict, field_name: str) -> str | None:
 # PROSPECTION SUBTASK
 # =============================================================================
 
+def find_existing_prospection_subtask(contact_name: str) -> dict | None:
+    """Check if a subtask with this name already exists under Prospection parent.
+    Returns {"subtask_id": str, "subtask_url": str} or None."""
+    parent_id = CLICKUP_PROSPECTION_TASK_ID
+    url = f"{CLICKUP_API_BASE}/task/{parent_id}?include_subtasks=true"
+    try:
+        resp = requests.get(url, headers=get_headers(), timeout=30)
+        if resp.status_code == 200:
+            for subtask in resp.json().get("subtasks", []):
+                if subtask.get("name") == contact_name:
+                    sid = subtask["id"]
+                    return {
+                        "subtask_id": sid,
+                        "subtask_url": subtask.get("url", f"https://app.clickup.com/t/{sid}"),
+                    }
+    except Exception:
+        pass
+    return None
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def create_prospection_subtask(
     contact_name: str,
@@ -276,11 +296,16 @@ def create_prospection_subtask(
 ) -> dict:
     """
     Create a subtask under the Prospection parent task when a lead status
-    changes to OPEN in HubSpot.
+    changes to OPEN in HubSpot. Checks for existing subtask first to prevent duplicates.
 
     prospect_info (optional): {objet, site_url, description, image_url}
     Returns: {"subtask_id": str, "subtask_url": str, "success": bool}
     """
+    # Dedup check: reuse existing subtask if one with same name exists
+    existing = find_existing_prospection_subtask(contact_name)
+    if existing:
+        print(f"♻️  Subtask already exists for '{contact_name}': {existing['subtask_id']} — reusing")
+        return {**existing, "success": True}
     parent_id = CLICKUP_PROSPECTION_TASK_ID
 
     list_id = get_task_list_id(parent_id)
